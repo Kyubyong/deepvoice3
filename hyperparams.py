@@ -2,7 +2,7 @@
 #/usr/bin/python2
 '''
 By kyubyong park. kbpark.linguist@gmail.com. 
-https://www.github.com/kyubyong/tacotron
+https://www.github.com/kyubyong/deepvoice3
 '''
 import math
 
@@ -44,11 +44,12 @@ class Hyperparams:
     enc_layers = 7
     enc_filter_size = 5
     enc_channels = 64 # == c
+    ## Decoder
+    dec_layers = 4
+    dec_filter_size = 5
+    attention_size = 128
+    dec_affine_size = (128, 256)
 
-    encoder_num_banks = 16
-    decoder_num_banks = 8
-    num_highwaynet_blocks = 4
-    feed_last_frames = True
     r = 4 # Reduction factor
     dropout_rate = .5
 

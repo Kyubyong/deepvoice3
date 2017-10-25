@@ -31,27 +31,29 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
         embedding = embed(inputs, hp.vocab_size, hp.embed_size)  # (N, T_x, E)
 
         # Encoder PreNet
-        inputs = tf.layers.dense(embedding, units=hp.enc_channels, activation=None, name="encoder_prenet") # (N, T_x, 64)
-        inputs = normalize(inputs, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
+        tensor = tf.layers.dense(embedding, units=hp.enc_channels, activation=None, name="encoder_prenet") # (N, T_x, 64)
+        tensor = normalize(tensor, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
 
         # Convolution Blocks: dropout -> convolution -> glu (activation)-> residual connection -> scale
         for i in range(hp.enc_layers):
-            inputs = conv_block(inputs,
+            tensor = conv_block(tensor,
                                size=hp.enc_filter_size,
                                training=training,
-                               scope="encoder_conv_block")
+                               scope="encoder_conv_block_{}".format(i))
 
         # Encoder PostNet : Restore the shape
-        inputs = tf.layers.dense(inputs, units=hp.embed_size, activation=None, name="encoder_postnet")  # (N, T_x, E)
-        keys = normalize(inputs, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
+        tensor = tf.layers.dense(tensor, units=hp.embed_size, activation=None, name="encoder_postnet")  # (N, T_x, E)
+        keys = normalize(tensor, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
+        vals = math.sqrt(0.5) * (keys + embedding)
 
-    return key, value
+    return keys, vals
 
-def decoder(inputs, memory, keys, training=True, scope="decoder1", reuse=None):
+def decoder(inputs, keys, vals, training=True, scope="decoder", reuse=None):
     '''
     Args:
       inputs: A 3d tensor with shape of [N, T_y/r, n_mels*r]. Shifted log melspectrogram of sound files.
-      memory: A 3d tensor with shape of [N, T_x, E].
+      keys: A 3d tensor with shape of [N, T_x, E].
+      vals: A 3d tensor with shape of [N, T_x, E].
       training: Whether or not the layer is in training mode.
       scope: Optional scope for `variable_scope`
       reuse: Boolean, whether to reuse the weights of a previous layer
@@ -61,63 +63,44 @@ def decoder(inputs, memory, keys, training=True, scope="decoder1", reuse=None):
       Predicted log melspectrogram tensor with shape of [N, T_y/r, n_mels*r].
     '''
     with tf.variable_scope(scope, reuse=reuse):
-        # Decoder pre-net
-        inputs = tf.layers.dense(inputs, units=128, activation=tf.nn.relu,
-                                 name="decoder_prenet")  # (N, T_x, c)
-        weight_norm
+        # Decoder PreNet
+        for i in range(hp.dec_layers):
+            inputs = tf.layers.dropout(inputs, rate=hp.dropout_rate, training=training)
+            inputs = tf.layers.dense(inputs, units=hp.dec_affine_size[0], activation=None)  # (N, T_y//r, c0)
+            inputs = normalize(inputs, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
 
-        # Convolution Blocks: dropout -> convolution -> glu (activation)-> residual connection -> scale
-        for i in range(4):
-            _inputs = tf.layers.dropout(inputs, rate=hp.dropout_rate, training=training, name="dropout1")
-            queries = conv1d(inputs, .., padding="causal", size=5, scope="conv1d_1")  # (N, T_y/r, 128)
-            #keys # (N, T_x, E)
-
+        for i in range(hp.dec_layers):
+            # Causal Convolution Block
+            queries = conv_block(inputs,
+                                size=hp.dec_filter_size,
+                                training=training,
+                                padding="CAUSAL",
+                                scope="decoder_conv_block_{}".format(i))
             # positional encoding
-            ...
+            # queries += ...
+            # keys += ...
 
-            # concat
-            queries += positional encoding
-            keys += positional encoding
+            # Attention Block
+            queries = tf.layers.dense(queries, units=hp.dec_affine_size[1], activation=tf.nn.relu)  # (N, T_y//r, c1)
+            keys = tf.layers.dense(keys, units=hp.dec_affine_size[1], activation=tf.nn.relu) # (N, T_x, c1)
+            vals = tf.layers.dense(vals, units=hp.dec_affine_size[1], activation=tf.nn.relu)  # (N, T_x, c1)
 
-            # Affine transformation
-            queries = tf.layers.dense(inputs, units=128, activation=tf.nn.relu??,
-                                 name="decoder_prenet")  # (N, T_x, c)
-            keys = tf.layers.dense(inputs, units=128, activation=tf.nn.relu??,
-                                 name="decoder_prenet")  # (N, T_x, c)
+            attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y//r, T_x)
+            alignments = tf.nn.softmax(attention_weights)
+            dropout = tf.layers.dropout(alignments, rate=hp.dropout_rate, training=training)
 
-            # multiplication
-            outputs = tf.matmul(Q_, tf.transpose(K_, [0, 2, 1]))  # (N, T_y, T_x)
+            tensor = tf.matmul(dropout, vals) # (N, T_y//r, c1)
+            tensor /= math.sqrt(hp.dec_affine_size[1])
 
+            tensor = normalize(tensor, type=hp.norm_type, training=training, activation_fn=None)
+            inputs = tensor + queries
 
+        # fc1
+        mels = tf.layers.dense(inputs, units=hp.n_mels*hp.r, activation=None) # (N, T_y/r, n_mels*r)
 
-            # Activation (softmax)
-            outputs = tf.nn.softmax(outputs) # <- aligments
-
-            # Dropouts
-            _inputs = tf.layers.dropout(inputs, rate=hp.dropout_rate, training=tf.convert_to_tensor(training), name="dropout1")
-
-            #
-            ## values (N, T_x, E)
-            values = tf.layers.dense(values, units=128, activation=tf.nn.relu??,
-                                 name="decoder_prenet")  # (N, T_x, 128)
-
-            # multiplication
-            outputs = tf.batch_matmul(outputs, values) # (N, T_y, 128)
-
-            # Scale
-            outputs = outputs / (K_.get_shape().as_list()[-1] ** 0.5)
-
-            # fc
-            mel_outputs = tf.layers.dense(outputs, units=128, activation=tf.nn.relu??,
-                name = "decoder_prenet")  # (N, T_x, 128)
-
-            # fc2
-            dones = tf.layers.dense(outputs, units=128, activation=tf.nn.sigmoid,
-                name = "decoder_prenet")  # (N, T_x, 128)
-
-
-
-    return outputs, alignments
+        # fc2
+        dones = tf.layers.dense(inputs, units=2, activation=None) # (N, T_y//r, 2)
+    return mels, dones, alignments
 
 def converter(inputs, training=True, scope="decoder2", reuse=None):
     '''Decoder Post-processing net = CBHG

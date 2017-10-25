@@ -135,7 +135,7 @@ def conv1d(inputs,
            size=1, 
            rate=1, 
            padding="SAME", 
-           use_bias=False,
+           use_bias=True,
            activation_fn=None,
            scope="conv1d",
            reuse=None):
@@ -174,14 +174,16 @@ def conv1d(inputs,
 def conv_block(inputs,
                size=5,
                training=False,
+               padding="SAME",
                scope="conv_block"):
+    num_inputs = inputs.get_shape().as_list[-1]
     _inputs = inputs
     with tf.variable_scope(scope):
         inputs = tf.layers.dropout(inputs, rate=hp.dropout_rate, training=training)
-        inputs = conv1d(inputs, tf.shape(inputs)[-1]*2, size=size, scope="conv1d_{}".format(i))  # (N, T_x, 64*2)
+        inputs = conv1d(inputs, num_inputs*2, size=size, padding=padding)  # (N, T_x, c*2)
         inputs = normalize(inputs, type=hp.norm_type, training=training, activation_fn=None)
-        A, B = tf.split(inputs, 2, -1) # (N, T_x, 64) * 2
-        inputs = A*tf.nn.sigmoid(B) # (N, T_x, 64) <- gated linear unit activation
+        A, B = tf.split(inputs, 2, -1) # (N, T_x, c) * 2
+        inputs = A*tf.nn.sigmoid(B) # (N, T_x, c) <- gated linear unit activation
         inputs += _inputs # residual connection
         inputs *= math.sqrt(0.5) # scale
 

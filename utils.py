@@ -2,7 +2,7 @@
 #/usr/bin/python2
 '''
 By kyubyong park. kbpark.linguist@gmail.com. 
-https://www.github.com/kyubyong/tacotron
+https://www.github.com/kyubyong/deepvoice3
 '''
 from __future__ import print_function
 

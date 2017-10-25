@@ -38,7 +38,7 @@ class Graph:
                 self.x = tf.placeholder(tf.int32, shape=(None, hp.T_x))
                 self.y = tf.placeholder(tf.float32, shape=(None, hp.T_y//hp.r, hp.n_mels*hp.r))
 
-            # Get encoder/decoder inputs
+            # Get decoder inputs
             self.encoder_inputs = embed(self.x, len(self.char2idx), hp.embed_size) # (N, T_x, E)
             self.decoder_inputs = tf.concat((tf.zeros_like(self.y[:, :1, :]), self.y[:, :-1, :]), 1)
             self.decoder_inputs = self.decoder_inputs[:, :, -hp.n_mels:] # feed last frames only (N, T_y//r, n_mels)
