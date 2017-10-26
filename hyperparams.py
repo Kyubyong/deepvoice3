@@ -37,21 +37,25 @@ class Hyperparams:
     mel_std = 2.5
 
     # Model
-    norm_type = "bn"
+    norm_type = "bn" # TODO: weight normalization
+    r = 4 # Reduction factor
+    dropout_rate = .5
     ## Enocder
-    vocab_size = 30 # [PE a-z'] == V
-    embed_size = 256 # == E
+    vocab_size = 30 # [PE a-z']
+    embed_size = 256 # == e
     enc_layers = 7
     enc_filter_size = 5
     enc_channels = 64 # == c
     ## Decoder
     dec_layers = 4
     dec_filter_size = 5
-    attention_size = 128
-    dec_affine_size = (128, 256)
+    dec_channels = 256 # == d
+    attention_size = 128 # == a
+    ## Converter
+    converter_layers = 5
+    converter_filter_size = 5
+    converter_channels = 256 # == v
 
-    r = 4 # Reduction factor
-    dropout_rate = .5
 
     # data
     data = 'LJSpeech-1.0'
@@ -64,7 +68,9 @@ class Hyperparams:
     logdir = "logdir/trial0"
     sampledir = 'samples/trial0'
     batch_size = 16
-    num_epochs = 10000 if not sanity_check else 60 # Paper => 2M global steps!
+    num_epochs = 10000
+    max_grad_norm = 100.
+    max_grad_val = 5.
     num_samples = 32
 
 

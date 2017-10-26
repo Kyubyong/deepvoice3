@@ -7,100 +7,84 @@ https://www.github.com/kyubyong/tacotron
 
 from __future__ import print_function
 
-import os
-
-import librosa
 from tqdm import tqdm
 
 from data_load import get_batch, load_vocab
 from hyperparams import Hyperparams as hp
 from modules import *
-from networks import encode, decode1, decode2
+from networks import encoder, decoder, converter
 import numpy as np
 import tensorflow as tf
 from utils import *
-import matplotlib.pyplot as plt
-
 
 class Graph:
-    def __init__(self, is_training=True):
+    def __init__(self, training=True):
         # Load vocabulary
         self.char2idx, self.idx2char = load_vocab()
         self.graph = tf.Graph()
         with self.graph.as_default():
             # Data Feeding
             # x: Text. (N, T_x) 
-            # y: Reduced melspectrogram. (N, T_y//r, n_mels*r)
+            # y1: Reduced melspectrogram. (N, T_y//r, n_mels*r)
+            # y2: Reduced dones. (N, T_y//r,)
             # z: Magnitude. (N, T_y, n_fft//2+1)
-            if is_training:
-                self.x, self.y, self.z, self.num_batch = get_batch()
+            if training:
+                self.x, self.y1, self.y2, self.z, self.num_batch = get_batch()
             else: # Evaluation
                 self.x = tf.placeholder(tf.int32, shape=(None, hp.T_x))
-                self.y = tf.placeholder(tf.float32, shape=(None, hp.T_y//hp.r, hp.n_mels*hp.r))
+                self.y1 = tf.placeholder(tf.float32, shape=(None, hp.T_y//hp.r, hp.n_mels*hp.r))
 
-            # Get decoder inputs
-            self.encoder_inputs = embed(self.x, len(self.char2idx), hp.embed_size) # (N, T_x, E)
-            self.decoder_inputs = tf.concat((tf.zeros_like(self.y[:, :1, :]), self.y[:, :-1, :]), 1)
-            self.decoder_inputs = self.decoder_inputs[:, :, -hp.n_mels:] # feed last frames only (N, T_y//r, n_mels)
+            # Get decoder inputs: feed last frames only (N, T_y//r, n_mels)
+            self.decoder_inputs = tf.concat((tf.zeros_like(self.y1[:, :1, -hp.n_mels:]), self.y1[:, :-1, -hp.n_mels:]), 1)
 
             # Networks
             with tf.variable_scope("net"):
                 # Encoder
-                self.memory = encode(self.encoder_inputs, is_training=is_training) # (N, T_x, E)
+                self.keys, self.vals = encoder(self.x,
+                                               training=training,
+                                               scope="encoder",
+                                               reuse=None) # (N, T_x, E), (N, T_x, E)
                 
                 # Decoder 
-                self.outputs1, self.alignments = decode1(self.decoder_inputs,
-                                                         self.memory,
-                                                         is_training=is_training) # (N, T_y//r, n_mels*r)
-                self.outputs2 = decode2(self.outputs1, is_training=is_training) # (N, T_y//r, (1+n_fft//2)*r)
-             
-            if is_training:
-                # Loss
-                self.loss1 = tf.abs(self.outputs1 - self.y)
-                self.loss2 = tf.abs(self.outputs2 - self.z)
+                self.mels, self.dones, self.alignments = decoder(self.decoder_inputs,
+                                                                  self.keys,
+                                                                  self.vals,
+                                                                  training=training,
+                                                                  scope="decoder",
+                                                                  reuse=None) # (N, T_y/r, n_mels*r), (N, T_y/r, 2), (N, T_y, T_x)
+                # Restore shape
+                self.mel_inputs = tf.reshape(self.mels, (hp.batch_size, hp.T_y, hp.n_mels))
 
-                self.mean_loss1 = tf.reduce_mean(self.loss1)
-                self.mean_loss2 = tf.reduce_mean(self.loss2)
-                self.mean_loss = self.mean_loss1 + self.mean_loss2 
-                
-                # Logging  
-                ## histograms
-                self.expected1_h = tf.reduce_mean(tf.reduce_mean(self.y, -1), 0)
-                self.got1_h = tf.reduce_mean(tf.reduce_mean(self.outputs1, -1),0)
-                
-                self.expected2_h = tf.reduce_mean(tf.reduce_mean(self.z, -1), 0)
-                self.got2_h = tf.reduce_mean(tf.reduce_mean(self.outputs2, -1),0)
-                
-                ## images
-                self.expected1_i = tf.expand_dims(tf.reduce_mean(self.y[:1], -1, keep_dims=True), 1)
-                self.got1_i = tf.expand_dims(tf.reduce_mean(self.outputs1[:1], -1, keep_dims=True), 1)
-                
-                self.expected2_i = tf.expand_dims(tf.reduce_mean(self.z[:1], -1, keep_dims=True), 1)
-                self.got2_i = tf.expand_dims(tf.reduce_mean(self.outputs2[:1], -1, keep_dims=True), 1)
-                                                
+                # Converter
+                self.mags = converter(self.mel_inputs,
+                                          training=training,
+                                          scope="converter",
+                                          reuse=None) # (N, T_y//r, (1+n_fft//2)*r)
+            if training:
+                # Loss
+                self.loss1_mae = tf.reduce_mean(tf.abs(self.mels - self.y1))
+                self.loss1_ce = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.dones, labels=self.y2)
+                self.loss2 = tf.abs(self.mags - self.z)
+                self.loss = self.loss1_mae + self.loss1_ce + self.loss2
+
                 # Training Scheme
                 self.global_step = tf.Variable(0, name='global_step', trainable=False)
                 self.optimizer = tf.train.AdamOptimizer(learning_rate=hp.lr)
-                self.train_op = self.optimizer.minimize(self.mean_loss, global_step=self.global_step)
+                self.gvs = self.optimizer.compute_gradients(self.loss)
+                self.clipped =  [(tf.clip_by_norm(
+                                    tf.clip_by_value(grad, -1.*hp.max_grad_val, hp.max_grad_val), var),
+                                    hp.max_grad_norm
+                                                 ) for grad, var in self.gvs]
+                self.train_op = self.optimizer.apply_gradients(self.clipped, global_step=self.global_step)
                    
-                # Summmary 
-                tf.summary.scalar('mean_loss1', self.mean_loss1)
-                tf.summary.scalar('mean_loss2', self.mean_loss2)
-                tf.summary.scalar('mean_loss', self.mean_loss)
-                
-                tf.summary.histogram('expected_values1', self.expected1_h)
-                tf.summary.histogram('gotten_values1', self.got1_h)
-                tf.summary.histogram('expected_values2', self.expected2_h)
-                tf.summary.histogram('gotten values2', self.got2_h)
-                                
-                tf.summary.image("expected_values1", self.expected1_i*255)
-                tf.summary.image("gotten_values1", self.got1_i*255)
-                tf.summary.image("expected_values2", self.expected2_i*255)
-                tf.summary.image("gotten_values2", self.got2_i*255)
+                # Summary
+                tf.summary.scalar('loss', self.loss)
+                tf.summary.scalar('loss1_mae', self.loss1_mae)
+                tf.summary.scalar('loss1_ce', self.loss1_ce)
+                tf.summary.scalar('loss2', self.loss2)
                 
                 self.merged = tf.summary.merge_all()
-         
-def main():   
+if __name__ == '__main__':
     g = Graph(); print("Training Graph loaded")
     
     with g.graph.as_default():
@@ -114,15 +98,6 @@ def main():
             for epoch in range(1, hp.num_epochs+1): 
                 if sv.should_stop(): break
                 for step in tqdm(range(g.num_batch), total=g.num_batch, ncols=70, leave=False, unit='b'):
-
-                        # fig, ax = plt.subplots()
-                        # print('$$$'*30)
-                        # print(al.shape)
-                        # im=ax.imshow(al[0],aspect='auto',interpolation='none')
-                        # fig.colorbar(im, ax=ax)
-                        # plt.xlabel('Decoder timestep')
-                        # plt.ylabel('Encoder timestep')
-                        # plt.savefig(hp.logdir+'/alignment_%d'%gs,format='png')
                     sess.run(g.train_op)
                 
                 # Write checkpoint files at every epoch
@@ -131,8 +106,6 @@ def main():
 
                 # plot alignments
                 gs, al = sess.run([g.global_step, g.alignments])
-                plot_alignment(al[0], gs)
+                plot_alignment(al[0].T, gs)
 
-if __name__ == '__main__':
-    main()
     print("Done")

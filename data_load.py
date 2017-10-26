@@ -37,7 +37,7 @@ def load_train_data():
     char2idx, idx2char = load_vocab()
 
     # Parse
-    texts, mels, mags = [], [], []
+    texts, mels, dones, mags = [], [], []
     metadata = os.path.join(hp.data, 'metadata.csv')
     for line in codecs.open(metadata, 'r', 'utf-8'):
         fname, _, sent = line.strip().split("|")
@@ -46,16 +46,30 @@ def load_train_data():
             sent += "P"*(hp.T_x-len(sent))
             texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
             mels.append(os.path.join(hp.data, "mels", fname + ".npy"))
+            dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
             mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
 
-    return texts, mels, mags
+    return texts, dones, mels, mags
 
+def load_test_data():
+    # Load vocabulary
+    char2idx, idx2char = load_vocab()
+
+    # Parse
+    texts = []
+    for line in codecs.open('test_sents.txt', 'r', 'utf-8'):
+        sent = text_normalize(sent) + "E" # text normalization, E: EOS
+        if len(sent) <= hp.T_x:
+            sent += "P"*(hp.T_x-len(sent))
+            texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
+
+    return texts
 
 def get_batch():
     """Loads training data and put them in queues"""
     with tf.device('/cpu:0'):
         # Load data
-        _texts, _mels, _mags = load_train_data() # bytes
+        _texts, _mels, _dones, _mags = load_train_data() # bytes
         
         # Calc total batch count
         num_batch = len(_texts) // hp.batch_size
@@ -63,24 +77,26 @@ def get_batch():
         # Convert to string tensor
         texts = tf.convert_to_tensor(_texts)
         mels = tf.convert_to_tensor(_mels)
+        dones = tf.convert_to_tensor(_dones)
         mags = tf.convert_to_tensor(_mags)
          
         # Create Queues
-        text, mel, mag = tf.train.slice_input_producer([texts, mels, mags], shuffle=True)
+        text, mel, done, mag = tf.train.slice_input_producer([texts, mels, dones, mags], shuffle=True)
 
         # Decoding to float32
         text = tf.decode_raw(text, tf.float32) # (T_x,)
         mel = tf.transpose(tf.decode_raw(tf.read_file(mel), tf.float32)) # (T_y/r, n_mels*r)
+        done = tf.transpose(tf.decode_raw(tf.read_file(done), tf.float32)) # (T_y/r,)
         mag = tf.transpose(tf.decode_raw(tf.read_file(mag), tf.float32)) # (T_y, 1+n_fft/2)
 
         # create batch queues
-        xs, ys, zs = tf.train.batch([text, mel, mag],
-                                shapes=[(hp.T_x,), (hp.T_y//hp.r, hp.n_mels*hp.r), (hp.T_y, 1+hp.n_fft//2)],
+        texts, mels, dones, mags = tf.train.batch([text, mel, done, mag],
+                                shapes=[(hp.T_x,), (hp.T_y//hp.r, hp.n_mels*hp.r), (hp.T_y,), (hp.T_y, 1+hp.n_fft//2)],
                                 num_threads=32,
                                 batch_size=hp.batch_size, 
                                 capacity=hp.batch_size*32,   
                                 dynamic_pad=False)
 
-    return xs, ys, zs, num_batch
+    return texts, mels, dones, mags, num_batch
 
 
