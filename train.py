@@ -29,9 +29,11 @@ class Graph:
             ## z: Magnitude. (N, T_y, n_fft//2+1) float32
             if training:
                 self.x, self.y1, self.y2, self.z, self.num_batch = get_batch()
+                self.prev_max_attentions = tf.constant([0]*hp.batch_size)
             else: # Evaluation
-                self.x = tf.placeholder(tf.int32, shape=(None, hp.T_x))
-                self.y1 = tf.placeholder(tf.float32, shape=(None, hp.T_y//hp.r, hp.n_mels*hp.r))
+                self.x = tf.placeholder(tf.int32, shape=(hp.batch_size, hp.T_x))
+                self.y1 = tf.placeholder(tf.float32, shape=(hp.batch_size, hp.T_y//hp.r, hp.n_mels*hp.r))
+                self.prev_max_attentions = tf.placeholder(tf.int32, shape=(hp.batch_size,))
 
             # Get decoder inputs: feed last frames only (N, T_y//r, n_mels)
             self.decoder_inputs = tf.concat((tf.zeros_like(self.y1[:, :1, -hp.n_mels:]), self.y1[:, :-1, -hp.n_mels:]), 1)
@@ -44,12 +46,13 @@ class Graph:
                                                scope="encoder")
 
                 # Decoder. mels: (N, T_y/r, n_mels*r), dones: (N, T_y/r, 2), alignments: (N, T_y, T_x)
-                self.mels, self.dones, self.alignments = decoder(self.decoder_inputs,
-                                                                  self.keys,
-                                                                  self.vals,
-                                                                  training=training,
-                                                                  scope="decoder",
-                                                                  reuse=None)
+                self.mels, self.dones, self.alignments, self.max_attentions = decoder(self.decoder_inputs,
+                                                                                     self.keys,
+                                                                                     self.vals,
+                                                                                     self.prev_max_attentions,
+                                                                                     training=training,
+                                                                                     scope="decoder",
+                                                                                     reuse=None)
                 # Restore shape. mel_inputs: (N, T_y, n_mels)
                 self.mel_inputs = tf.reshape(self.mels, (hp.batch_size, hp.T_y, hp.n_mels))
                 self.mel_inputs = normalize(self.mel_inputs, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
@@ -88,8 +91,6 @@ class Graph:
 
 if __name__ == '__main__':
     g = Graph(); print("Training Graph loaded")
-    print(g.num_batch)
-    
     with g.graph.as_default():
         sv = tf.train.Supervisor(logdir=hp.logdir, save_model_secs=0)
         with sv.managed_session() as sess:

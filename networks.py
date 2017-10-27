@@ -59,7 +59,13 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
 
     return keys, vals
 
-def decoder(inputs, keys, vals, training=True, scope="decoder", reuse=None):
+def decoder(inputs,
+            keys,
+            vals,
+            prev_max_attentions=None,
+            training=True,
+            scope="decoder",
+            reuse=None):
     '''
     Args:
       inputs: A 3d tensor with shape of [N, T_y/r, n_mels*r]. Shifted log melspectrogram of sound files.
@@ -96,15 +102,16 @@ def decoder(inputs, keys, vals, training=True, scope="decoder", reuse=None):
                                  scope="decoder_conv_block_{}".format(i))
 
             # Attention Block. tensor: (N, T_y/r, d), alignments: (N, T_y, T_x)
-            tensor, alignments = attention_block(queries,
-                                    keys,
-                                    vals,
-                                    num_units=hp.attention_size,
-                                    dropout_rate=hp.dropout_rate,
-                                    norm_type=hp.norm_type,
-                                    activation_fn=tf.nn.relu,
-                                    training=training,
-                                    scope="attention_block_{}".format(i))
+            tensor, alignments, max_attentions = attention_block(queries,
+                                                                 keys,
+                                                                 vals,
+                                                                 num_units=hp.attention_size,
+                                                                 dropout_rate=hp.dropout_rate,
+                                                                 prev_max_attentions=prev_max_attentions,
+                                                                 norm_type=hp.norm_type,
+                                                                 activation_fn=tf.nn.relu,
+                                                                 training=training,
+                                                                 scope="attention_block_{}".format(i))
 
             inputs = tensor + queries
 
@@ -123,7 +130,7 @@ def decoder(inputs, keys, vals, training=True, scope="decoder", reuse=None):
                          activation_fn=None,
                          training=training,
                          scope="dones")  # (N, T_y/r, 2)
-    return mels, dones, alignments
+    return mels, dones, alignments, max_attentions
 
 def converter(inputs, training=True, scope="decoder2", reuse=None):
     '''Decoder Post-processing net = CBHG

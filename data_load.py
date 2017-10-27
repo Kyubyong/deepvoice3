@@ -57,11 +57,11 @@ def load_test_data():
     # Parse
     texts = []
     for line in codecs.open('test_sents.txt', 'r', 'utf-8'):
-        sent = text_normalize(sent) + "E" # text normalization, E: EOS
+        sent = text_normalize(line.strip()) + "E" # text normalization, E: EOS
         if len(sent) <= hp.T_x:
             sent += "P"*(hp.T_x-len(sent))
-            texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
-
+            texts.append([char2idx[char] for char in sent])
+    texts = np.array(texts, np.int32)
     return texts
 
 def get_batch():

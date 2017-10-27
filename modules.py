@@ -308,6 +308,7 @@ def attention_block(queries,
                     vals,
                     num_units,
                     dropout_rate=0,
+                    prev_max_attentions=None,
                     norm_type=None,
                     activation_fn=None,
                     training=False,
@@ -366,7 +367,17 @@ def attention_block(queries,
                         scope="vals_fc_block")  # (N, T_x, a)
 
         attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
-        alignments = tf.nn.softmax(attention_weights)
+        if training:
+            alignments = tf.nn.softmax(attention_weights)
+            max_attentions = prev_max_attentions
+        else: # force monotonic attention
+            n, t, c = attention_weights.get_shape().as_list()
+            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)
+            masks = tf.sequence_mask(prev_max_attentions, c)
+            masks = tf.tile(tf.expand_dims(masks, 1), [1, t, 1])
+            attention_weights = tf.where(tf.equal(masks, False), attention_weights, paddings)
+            alignments = tf.nn.softmax(attention_weights)
+            max_attentions = tf.argmax(alignments, -1)
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
         tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
@@ -381,4 +392,4 @@ def attention_block(queries,
                           activation_fn=activation_fn,
                           scope="tensor_fc_block")  # (N, T_x, dec_channels)
 
-    return tensor, alignments
+    return tensor, alignments, max_attentions
