@@ -13,7 +13,6 @@ import tensorflow as tf
 from utils import *
 import codecs
 import re
-import csv
 import os
 import unicodedata
 
@@ -37,7 +36,7 @@ def load_train_data():
     char2idx, idx2char = load_vocab()
 
     # Parse
-    texts, mels, dones, mags = [], [], []
+    texts, mels, dones, mags = [], [], [], []
     metadata = os.path.join(hp.data, 'metadata.csv')
     for line in codecs.open(metadata, 'r', 'utf-8'):
         fname, _, sent = line.strip().split("|")
@@ -49,7 +48,7 @@ def load_train_data():
             dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
             mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
 
-    return texts, dones, mels, mags
+    return texts, mels, dones, mags
 
 def load_test_data():
     # Load vocabulary
@@ -70,7 +69,7 @@ def get_batch():
     with tf.device('/cpu:0'):
         # Load data
         _texts, _mels, _dones, _mags = load_train_data() # bytes
-        
+
         # Calc total batch count
         num_batch = len(_texts) // hp.batch_size
          
@@ -83,20 +82,18 @@ def get_batch():
         # Create Queues
         text, mel, done, mag = tf.train.slice_input_producer([texts, mels, dones, mags], shuffle=True)
 
-        # Decoding to float32
-        text = tf.decode_raw(text, tf.float32) # (T_x,)
-        mel = tf.transpose(tf.decode_raw(tf.read_file(mel), tf.float32)) # (T_y/r, n_mels*r)
-        done = tf.transpose(tf.decode_raw(tf.read_file(done), tf.float32)) # (T_y/r,)
-        mag = tf.transpose(tf.decode_raw(tf.read_file(mag), tf.float32)) # (T_y, 1+n_fft/2)
+        # Decoding.
+        text = tf.decode_raw(text, tf.int32) # (T_x,)
+        mel = tf.py_func(lambda x:np.load(x), [mel], tf.float32) # (T_y/r, n_mels*r)
+        done = tf.py_func(lambda x:np.load(x), [done], tf.int32) # (T_y,)
+        mag = tf.py_func(lambda x:np.load(x), [mag], tf.float32) # (T_y, 1+n_fft/2)
 
         # create batch queues
         texts, mels, dones, mags = tf.train.batch([text, mel, done, mag],
-                                shapes=[(hp.T_x,), (hp.T_y//hp.r, hp.n_mels*hp.r), (hp.T_y,), (hp.T_y, 1+hp.n_fft//2)],
+                                shapes=[(hp.T_x,), (hp.T_y//hp.r, hp.n_mels*hp.r), (hp.T_y//hp.r,), (hp.T_y, 1+hp.n_fft//2)],
                                 num_threads=32,
                                 batch_size=hp.batch_size, 
                                 capacity=hp.batch_size*32,   
                                 dynamic_pad=False)
 
     return texts, mels, dones, mags, num_batch
-
-

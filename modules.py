@@ -35,7 +35,7 @@ def embed(inputs, vocab_size, num_units, zero_pad=True, scope="embedding", reuse
         lookup_table = tf.get_variable('lookup_table', 
                                        dtype=tf.float32, 
                                        shape=[vocab_size, num_units],
-                                       initializer=tf.contrib.layers.xavxavier())
+                                       initializer=tf.contrib.layers.xavier_initializer())
         if zero_pad:
             lookup_table = tf.concat((tf.zeros(shape=[1, num_units]), 
                                       lookup_table[1:, :]), 0)
@@ -92,7 +92,7 @@ def normalize(inputs,
                                                center=True, 
                                                scale=True, 
                                                updates_collections=None,
-                                               training=training,
+                                               is_training=training,
                                                scope=scope,
                                                fused=True,
                                                reuse=reuse)
@@ -166,7 +166,7 @@ def conv1d(inputs,
         
         params = {"inputs":inputs, "filters":filters, "kernel_size":size,
                 "dilation_rate":rate, "padding":padding, "activation":activation_fn, 
-                "use_bias":use_bias, "reuse":reuse, "kernel_initializer":tf.contrib.layers.xavier_initializer}
+                "use_bias":use_bias, "reuse":reuse, "kernel_initializer":tf.contrib.layers.xavier_initializer()}
         
         outputs = tf.layers.conv1d(**params)
     return outputs
@@ -208,7 +208,7 @@ def conv_block(inputs,
     Returns:
       A tensor of the same shape and dtype as inputs.
     '''
-    num_inputs = inputs.get_shape().as_list[-1]
+    num_inputs = inputs.get_shape()[-1]
     _inputs = inputs
     with tf.variable_scope(scope, reuse=reuse):
         inputs = tf.layers.dropout(inputs, rate=dropout_rate, training=training)
@@ -291,7 +291,7 @@ def positional_encoding(inputs,
         position_enc[:, 1::2] = np.cos(position_enc[:, 1::2])  # dim 2i+1
 
         # Convert to a tensor
-        lookup_table = tf.convert_to_tensor(position_enc)
+        lookup_table = tf.convert_to_tensor(position_enc, tf.float32)
 
         if zero_pad:
             lookup_table = tf.concat((tf.zeros(shape=[1, num_units]),
@@ -332,12 +332,12 @@ def attention_block(queries,
     '''
     num_inputs = queries.get_shape().as_list()[-1]
     with tf.variable_scope(scope, reuse=reuse):
-        queries += positional_encoding(queries,
+        queries += positional_encoding(queries[:, :, 0],
                                       num_units=num_inputs,
                                       position_rate=hp.T_x/hp.T_y,
                                       zero_pad=False,
                                       scale=True)  # (N, T_y/r, d)
-        keys += positional_encoding(keys,
+        keys += positional_encoding(keys[:, :, 0],
                                     num_units=keys.get_shape().as_list()[-1],
                                     position_rate=1.,
                                     zero_pad=False,
@@ -348,26 +348,29 @@ def attention_block(queries,
                            dropout_rate=0,
                            norm_type=norm_type,
                            training=training,
-                           activation_fn=activation_fn)  # (N, T_y/r, a)
+                           activation_fn=activation_fn,
+                           scope="queries_fc_block")  # (N, T_y/r, a)
         keys = fc_block(keys,
                         num_units=num_units,
                         dropout_rate=0,
                         norm_type=norm_type,
                         training=training,
-                        activation_fn=activation_fn)  # (N, T_x, a)
+                        activation_fn=activation_fn,
+                        scope="keys_fc_block")  # (N, T_x, a)
         vals = fc_block(vals,
                         num_units=num_units,
                         dropout_rate=0,
                         norm_type=norm_type,
                         training=training,
-                        activation_fn=activation_fn)  # (N, T_x, a)
+                        activation_fn=activation_fn,
+                        scope="vals_fc_block")  # (N, T_x, a)
 
         attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
         alignments = tf.nn.softmax(attention_weights)
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
         tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
-        tensor /= math.sqrt(tensor.get_shape()[-1])
+        tensor /= tf.sqrt(tf.to_float(tensor.get_shape()[-1]))
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
@@ -375,6 +378,7 @@ def attention_block(queries,
                           dropout_rate=0,
                           norm_type=norm_type,
                           training=training,
-                          activation_fn=activation_fn)  # (N, T_x, dec_channels)
+                          activation_fn=activation_fn,
+                          scope="tensor_fc_block")  # (N, T_x, dec_channels)
 
     return tensor, alignments

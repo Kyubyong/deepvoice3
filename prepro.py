@@ -46,7 +46,7 @@ def get_spectrograms(sound_file):
     mel_basis = librosa.filters.mel(hp.sr, hp.n_fft, hp.n_mels)  # (n_mels, 1+n_fft//2)
     mel = np.dot(mel_basis, mag**2)  # (n_mels, t)
 
-    # Transpose -> Dtype conversion
+    # Transpose
     mel = mel.T.astype(np.float32) # (T, n_mels)
     mag = mag.T.astype(np.float32) # (T, 1+n_fft//2)
 
@@ -69,7 +69,7 @@ def get_spectrograms(sound_file):
     # Reduce frames for net1
     mel = np.reshape(mel, (-1, hp.n_mels*hp.r))
     dones = np.reshape(dones, (-1, hp.r))
-    dones = np.equal(np.sum(dones, -1), 0).astype(np.float32) # 1 for done, 0 for undone.
+    dones = np.equal(np.sum(dones, -1), 0).astype(np.int32) # 1 for done, 0 for undone.
 
     return mel, dones, mag # (T/r, n_mels*r), (T/r,), (T, 1_n_fft/2)
 

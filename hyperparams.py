@@ -17,9 +17,6 @@ def get_T_y(duration, sr, win_length, hop_length, r):
 
 class Hyperparams:
     '''Hyper parameters'''
-    # mode
-    sanity_check = False
-
     # signal processing
     sr = 22050 # Sampling rate. Paper => 24000
     n_fft = 2048 # fft points (samples)
@@ -72,6 +69,7 @@ class Hyperparams:
     max_grad_norm = 100.
     max_grad_val = 5.
     num_samples = 32
+    num_iterations = 500000
 
 
 

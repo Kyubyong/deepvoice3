@@ -9,7 +9,6 @@ from __future__ import print_function
 
 from hyperparams import Hyperparams as hp
 from modules import *
-from utils import restore_shape
 import tensorflow as tf
 import math
 
@@ -30,12 +29,13 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
         embedding = embed(inputs, hp.vocab_size, hp.embed_size)  # (N, T_x, E)
 
         # Encoder PreNet
-        tensor = fc_block(inputs,
+        tensor = fc_block(embedding,
                           num_units=hp.enc_channels,
                           dropout_rate=0,
                           norm_type=hp.norm_type,
                           activation_fn=tf.nn.relu,
-                          training=training) # (N, T_x, c)
+                          training=training,
+                          scope="prenet_fc_block") # (N, T_x, c)
 
         # Convolution Blocks
         for i in range(hp.enc_layers):
@@ -53,7 +53,8 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
                         dropout_rate=0,
                         norm_type=hp.norm_type,
                         activation_fn=tf.nn.relu,
-                        training=training) # (N, T_x, E)
+                        training=training,
+                        scope="postnet_fc_block") # (N, T_x, E)
         vals = math.sqrt(0.5) * (keys + embedding) # (N, T_x, E)
 
     return keys, vals
@@ -73,52 +74,55 @@ def decoder(inputs, keys, vals, training=True, scope="decoder", reuse=None):
       Predicted log melspectrogram tensor with shape of [N, T_y/r, n_mels*r].
     '''
     with tf.variable_scope(scope, reuse=reuse):
-        # Decoder PreNet
+        # Decoder PreNet. inputs:(N, T_y/r, d)
         for i in range(hp.dec_layers):
             inputs = fc_block(inputs,
                               num_units=hp.dec_channels,
                               dropout_rate=0 if i==0 else hp.dropout_rate,
                               norm_type=hp.norm_type,
                               activation_fn=tf.nn.relu,
-                              training=training) # (N, T_y/r, d)
+                              training=training,
+                              scope="prenet_fc_block_{}".format(i))
 
         for i in range(hp.dec_layers):
-            # Causal Convolution Block
-            with tf.variable_scope("decoder_conv_block_{}".format(i)):
-                queries = conv_block(inputs,
-                                     size=hp.dec_filter_size,
-                                     dropout_rate=0,
-                                     padding="CAUSAL",
-                                     norm_type=hp.norm_type,
-                                     activation_fn=glu,
-                                     training=training) # (N, T_y/r, d)
+            # Causal Convolution Block. queries: (N, T_y/r, d)
+            queries = conv_block(inputs,
+                                 size=hp.dec_filter_size,
+                                 dropout_rate=0,
+                                 padding="CAUSAL",
+                                 norm_type=hp.norm_type,
+                                 activation_fn=glu,
+                                 training=training,
+                                 scope="decoder_conv_block_{}".format(i))
 
-            # Attention Block
-            with tf.variable_scope("attention_block_{}".format(i)):
-                tensor, alignments = attention_block(queries,
-                                        keys,
-                                        vals,
-                                        num_units=hp.attention_size,
-                                        dropout_rate=hp.dropout_rate,
-                                        norm_type=hp.norm_type,
-                                        activation_fn=tf.nn.relu,
-                                        training=training)
+            # Attention Block. tensor: (N, T_y/r, d), alignments: (N, T_y, T_x)
+            tensor, alignments = attention_block(queries,
+                                    keys,
+                                    vals,
+                                    num_units=hp.attention_size,
+                                    dropout_rate=hp.dropout_rate,
+                                    norm_type=hp.norm_type,
+                                    activation_fn=tf.nn.relu,
+                                    training=training,
+                                    scope="attention_block_{}".format(i))
 
             inputs = tensor + queries
 
         # Readout layers
         mels = fc_block(inputs,
-                         num_units=hp.n_mels*hp.r,
-                         dropout_rate=0,
-                         norm_type=None,
-                         activation_fn=None,
-                         training=training)  # (N, T_y/r, n_mels*r)
-        dones = fc_block(inputs,
-                        num_units=2,
+                        num_units=hp.n_mels*hp.r,
                         dropout_rate=0,
                         norm_type=None,
                         activation_fn=None,
-                        training=training)  # (N, T_y/r, 2)
+                        training=training,
+                        scope="mels")  # (N, T_y/r, n_mels*r)
+        dones = fc_block(inputs,
+                         num_units=2,
+                         dropout_rate=0,
+                         norm_type=None,
+                         activation_fn=None,
+                         training=training,
+                         scope="dones")  # (N, T_y/r, 2)
     return mels, dones, alignments
 
 def converter(inputs, training=True, scope="decoder2", reuse=None):
@@ -147,10 +151,11 @@ def converter(inputs, training=True, scope="decoder2", reuse=None):
 
         # Readout layer
         mag = fc_block(inputs,
-                         num_units=hp.n_fft//2+1,
-                         dropout_rate=0,
-                         norm_type=None,
-                         activation_fn=None,
-                         training=training)  # (N, T_y/r, 2)
+                       num_units=hp.n_fft//2+1,
+                       dropout_rate=0,
+                       norm_type=None,
+                       activation_fn=None,
+                       training=training,
+                       scope="mag")  # (N, T_y/r, 2)
 
     return mag
