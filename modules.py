@@ -335,14 +335,14 @@ def attention_block(queries,
     with tf.variable_scope(scope, reuse=reuse):
         queries += positional_encoding(queries[:, :, 0],
                                       num_units=num_inputs,
-                                      position_rate=hp.T_x/hp.T_y,
+                                      position_rate=1.,
                                       zero_pad=False,
                                       scale=True)  # (N, T_y/r, d)
         keys += positional_encoding(keys[:, :, 0],
                                     num_units=keys.get_shape().as_list()[-1],
-                                    position_rate=1.,
+                                    position_rate=(hp.T_y//hp.r)/hp.T_x,
                                     zero_pad=False,
-                                    scale=True)  # (N, T_y/r, e)
+                                    scale=True)  # (N, T_x, e)
 
         queries = fc_block(queries,
                            num_units=num_units,

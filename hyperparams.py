@@ -36,7 +36,7 @@ class Hyperparams:
     # Model
     norm_type = "bn" # TODO: weight normalization
     r = 4 # Reduction factor
-    dropout_rate = .5
+    dropout_rate = .05
     ## Enocder
     vocab_size = 30 # [PE a-z']
     embed_size = 256 # == e
@@ -62,8 +62,8 @@ class Hyperparams:
 
     # training scheme
     lr = 0.001
-    logdir = "logdir/trial0"
-    sampledir = 'samples/trial0'
+    logdir = "logdir/trial1"
+    sampledir = 'samples/trial1'
     batch_size = 16
     num_epochs = 10000
     max_grad_norm = 100.

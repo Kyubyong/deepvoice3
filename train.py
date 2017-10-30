@@ -105,7 +105,8 @@ if __name__ == '__main__':
 
                 # plot alignments
                 al = sess.run(g.alignments)
-                plot_alignment(al[0].T, gs)
+                plot_alignment(al[0].T, gs) # (T_x, T_y/r)
+                print(al[0].T.argmax(0))
 
                 # break
                 if gs > hp.num_iterations: break
