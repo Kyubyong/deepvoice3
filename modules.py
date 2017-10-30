@@ -381,7 +381,7 @@ def attention_block(queries,
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
         tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
-        tensor /= tf.sqrt(tf.to_float(tensor.get_shape()[-1]))
+        tensor /= tf.sqrt(tf.to_float(tensor.get_shape()[1]))
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
