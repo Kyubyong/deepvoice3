@@ -37,6 +37,7 @@ class Hyperparams:
     norm_type = "bn" # TODO: weight normalization
     r = 4 # Reduction factor
     dropout_rate = .05
+    sinusoid = False
     ## Enocder
     vocab_size = 30 # [PE a-z']
     embed_size = 256 # == e
@@ -53,7 +54,6 @@ class Hyperparams:
     converter_filter_size = 5
     converter_channels = 256 # == v
 
-
     # data
     data = 'LJSpeech-1.0'
     max_duration = 10.10 # seconds
@@ -62,8 +62,8 @@ class Hyperparams:
 
     # training scheme
     lr = 0.001
-    logdir = "logdir/trial1"
-    sampledir = 'samples/trial1'
+    logdir = "logdir/trial4"
+    sampledir = 'samples/trial4'
     batch_size = 16
     num_epochs = 10000
     max_grad_norm = 100.

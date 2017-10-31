@@ -41,7 +41,7 @@ class Graph:
             # Networks
             with tf.variable_scope("net"):
                 # Encoder. keys: (N, T_x, E), vals: (N, T_x, E)
-                self.keys, self.vals = encoder(self.x,
+                self.keys, self.vals, self.masks = encoder(self.x,
                                                training=training,
                                                scope="encoder")
 
@@ -49,6 +49,7 @@ class Graph:
                 self.mels, self.dones, self.alignments, self.max_attentions = decoder(self.decoder_inputs,
                                                                                      self.keys,
                                                                                      self.vals,
+                                                                                     self.masks,
                                                                                      self.prev_max_attentions,
                                                                                      training=training,
                                                                                      scope="decoder",
@@ -94,21 +95,24 @@ if __name__ == '__main__':
     with g.graph.as_default():
         sv = tf.train.Supervisor(logdir=hp.logdir, save_model_secs=0)
         with sv.managed_session() as sess:
-            for epoch in range(1, 100000000):
-                if sv.should_stop(): break
-                for step in tqdm(range(g.num_batch), total=g.num_batch, ncols=70, leave=False, unit='b'):
-                    sess.run(g.train_op)
-                
-                # Write checkpoint files at every epoch
-                gs = sess.run(g.global_step) 
-                sv.saver.save(sess, hp.logdir + '/model_epoch_%04d_gs_%d' % (epoch, gs))
+            with open('temp.txt', 'w') as fout:
+                for epoch in range(1, 100000000):
+                    if sv.should_stop(): break
+                    for step in tqdm(range(g.num_batch), total=g.num_batch, ncols=70, leave=False, unit='b'):
+                        sess.run(g.train_op)
 
-                # plot alignments
-                al = sess.run(g.alignments)
-                plot_alignment(al[0].T, gs) # (T_x, T_y/r)
-                print(al[0].T.argmax(0))
+                    # Write checkpoint files at every epoch
+                    gs = sess.run(g.global_step)
+                    sv.saver.save(sess, hp.logdir + '/model_epoch_%04d_gs_%d' % (epoch, gs))
 
-                # break
-                if gs > hp.num_iterations: break
+                    # plot alignments
+                    al = sess.run(g.alignments)
+                    plot_alignment(al[0].T, gs) # (T_x, T_y/r)
+                    print(al[0].T.argmax(0))
+                    fout.write("gs={}".format(gs))
+                    fout.write("alignment\n{}".format(al[0].T))
+
+                    # break
+                    if gs > hp.num_iterations: break
 
     print("Done")

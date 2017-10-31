@@ -10,7 +10,6 @@ from __future__ import print_function, division
 from hyperparams import Hyperparams as hp
 import tensorflow as tf
 import numpy as np
-import math
 
 
 def embed(inputs, vocab_size, num_units, zero_pad=True, scope="embedding", reuse=None):
@@ -174,7 +173,7 @@ def conv1d(inputs,
 def glu(inputs):
     '''Gated linear unit
     Args:
-      inputs: A tensor of even dimensions.
+      inputs: A tensor of even dimensions. (N, T_x, 2c)
 
     Returns:
       outputs: A tensor of the same shape and dtype as inputs.
@@ -215,7 +214,7 @@ def conv_block(inputs,
         inputs = conv1d(inputs, num_inputs*2, size=size, padding=padding)  # (N, T_x, c*2)
         inputs = normalize(inputs, type=norm_type, training=training, activation_fn=activation_fn)
         inputs += _inputs # residual connection
-        inputs *= math.sqrt(0.5) # scale
+        inputs *= tf.sqrt(0.5) # scale
 
     return inputs
 
@@ -299,13 +298,14 @@ def positional_encoding(inputs,
         outputs = tf.nn.embedding_lookup(lookup_table, position_ind)
 
         if scale:
-            outputs = outputs * num_units**0.5
+            outputs *= num_units**0.5
 
         return outputs
 
 def attention_block(queries,
                     keys,
                     vals,
+                    masks,
                     num_units,
                     dropout_rate=0,
                     prev_max_attentions=None,
@@ -331,18 +331,31 @@ def attention_block(queries,
      Returns:
        A tensor with shape of [batch, time, num_units].
     '''
-    num_inputs = queries.get_shape().as_list()[-1]
+    _keys = keys
     with tf.variable_scope(scope, reuse=reuse):
-        queries += positional_encoding(queries[:, :, 0],
-                                      num_units=num_inputs,
-                                      position_rate=1.,
-                                      zero_pad=False,
-                                      scale=True)  # (N, T_y/r, d)
-        keys += positional_encoding(keys[:, :, 0],
-                                    num_units=keys.get_shape().as_list()[-1],
-                                    position_rate=(hp.T_y//hp.r)/hp.T_x,
-                                    zero_pad=False,
-                                    scale=True)  # (N, T_x, e)
+        if hp.sinusoid:
+            queries += positional_encoding(queries[:, :, 0],
+                                          num_units=hp.dec_channels,
+                                          position_rate=1.,
+                                          zero_pad=False,
+                                          scale=True)  # (N, T_y/r, d)
+            keys += positional_encoding(keys[:, :, 0],
+                                        num_units=hp.embed_size,
+                                        position_rate=(hp.T_y//hp.r)/hp.T_x,
+                                        zero_pad=False,
+                                        scale=True)  # (N, T_x, e)
+        else:
+            queries += embed(tf.tile(tf.expand_dims(tf.range(hp.T_y//hp.r), 0), [hp.batch_size, 1]),
+                                  vocab_size=hp.T_y//hp.r,
+                                  num_units=hp.dec_channels,
+                                  zero_pad=False,
+                                  scope="query_pe")
+
+            keys += embed(tf.tile(tf.expand_dims(tf.range(hp.T_x), 0), [hp.batch_size, 1]),
+                                  vocab_size=hp.T_x,
+                                  num_units=hp.embed_size,
+                                  zero_pad=False,
+                                  scope="key_pe")
 
         queries = fc_block(queries,
                            num_units=num_units,
@@ -367,25 +380,30 @@ def attention_block(queries,
                         scope="vals_fc_block")  # (N, T_x, a)
 
         attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
+
+        # Key Masking
+        _, Ty, Tx = attention_weights.get_shape().as_list() # Ty=T_y/r, Tx = T_x
+        key_masks = tf.tile(tf.expand_dims(masks, 1), [1, Ty, 1])  # (N, T_y/r, T_x)
+        paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1) # (N, T_y/r, T_x)
+        attention_weights = tf.where(tf.equal(key_masks, 0), paddings, attention_weights)  # (N, T_y/r, T_x)
+
         if training:
             alignments = tf.nn.softmax(attention_weights)
             max_attentions = prev_max_attentions
         else: # force monotonic attention
-            n, t, c = attention_weights.get_shape().as_list()
-            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)
-            masks = tf.sequence_mask(prev_max_attentions, c)
-            masks = tf.tile(tf.expand_dims(masks, 1), [1, t, 1])
-            attention_weights = tf.where(tf.equal(masks, False), attention_weights, paddings)
+            key_masks = tf.sequence_mask(prev_max_attentions, Tx)
+            key_masks = tf.tile(tf.expand_dims(key_masks, 1), [1, Ty, 1])
+            attention_weights = tf.where(tf.equal(key_masks, False), attention_weights, paddings)
             alignments = tf.nn.softmax(attention_weights)
             max_attentions = tf.argmax(alignments, -1)
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
         tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
-        tensor /= tf.sqrt(tf.to_float(tensor.get_shape()[1]))
+        tensor /= tf.sqrt(tf.to_float(Ty))
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
-                          num_units=num_inputs,
+                          num_units=hp.dec_channels,
                           dropout_rate=0,
                           norm_type=norm_type,
                           training=training,

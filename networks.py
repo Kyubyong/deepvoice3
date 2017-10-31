@@ -10,7 +10,6 @@ from __future__ import print_function
 from hyperparams import Hyperparams as hp
 from modules import *
 import tensorflow as tf
-import math
 
 def encoder(inputs, training=True, scope="encoder", reuse=None):
     '''
@@ -24,6 +23,7 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
     Returns:
       A collection of Hidden vectors. So-called memory. Has the shape of (N, T_x, E).
     '''
+    masks = tf.sign(tf.abs(inputs))  # (N, T_x)
     with tf.variable_scope(scope, reuse=reuse):
         # Text Embedding
         embedding = embed(inputs, hp.vocab_size, hp.embed_size)  # (N, T_x, E)
@@ -55,13 +55,14 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
                         activation_fn=tf.nn.relu,
                         training=training,
                         scope="postnet_fc_block") # (N, T_x, E)
-        vals = math.sqrt(0.5) * (keys + embedding) # (N, T_x, E)
+        vals = tf.sqrt(0.5) * (keys + embedding) # (N, T_x, E)
 
-    return keys, vals
+    return keys, vals, masks
 
 def decoder(inputs,
             keys,
             vals,
+            masks,
             prev_max_attentions=None,
             training=True,
             scope="decoder",
@@ -105,6 +106,7 @@ def decoder(inputs,
             tensor, alignments, max_attentions = attention_block(queries,
                                                                  keys,
                                                                  vals,
+                                                                 masks,
                                                                  num_units=hp.attention_size,
                                                                  dropout_rate=hp.dropout_rate,
                                                                  prev_max_attentions=prev_max_attentions,
