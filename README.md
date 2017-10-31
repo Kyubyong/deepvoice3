@@ -6,7 +6,7 @@ This is a tensorflow implementation of [DEEP VOICE 3: 2000-SPEAKER NEURAL TEXT-T
 
 ### Data
 
-I use [The LJ Speech Dataset](https://keithito.com/LJ-Speech-Dataset/LJ).
+I use [The LJ Speech Dataset](https://keithito.com/LJ-Speech-Dataset).
 
 ## File Description
 
