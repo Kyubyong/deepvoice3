@@ -45,11 +45,18 @@ def plot_alignment(alignment, gs):
 
     gs : (int) global step
     """
+    a = alignment[:, 10]
+
     fig, ax = plt.subplots()
-    im = ax.imshow(alignment, cmap='hot', interpolation='none')
+    im = ax.imshow(alignment, interpolation='none')
     fig.colorbar(im, ax=ax)
     plt.xlabel('Decoder timestep')
     plt.ylabel('Encoder timestep')
     plt.title('Global Steps={}'.format(gs))
     plt.tight_layout()
+    plt.axis('off')
     plt.savefig('{}/alignment_{}.png'.format(hp.logdir, gs), format='png')
+
+    # figure = plt.figure()
+    # plt.bar(np.arange(len(a)), a)
+    # plt.savefig('{}/a_{}.png'.format(hp.logdir, gs), format='png')

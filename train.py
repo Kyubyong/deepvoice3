@@ -72,7 +72,10 @@ class Graph:
 
                 # Training Scheme
                 self.global_step = tf.Variable(0, name='global_step', trainable=False)
-                self.optimizer = tf.train.AdamOptimizer(learning_rate=hp.lr)
+                if hp.optim == "adam":
+                    self.optimizer = tf.train.AdamOptimizer(learning_rate=hp.lr)
+                else:
+                    self.optimizer = tf.train.RMSPropOptimizer(learning_rate=hp.lr)
                 ## gradient clipping
                 self.gvs = self.optimizer.compute_gradients(self.loss)
                 self.clipped = []
@@ -96,6 +99,10 @@ if __name__ == '__main__':
         sv = tf.train.Supervisor(logdir=hp.logdir, save_model_secs=0)
         with sv.managed_session() as sess:
             with open('temp.txt', 'w') as fout:
+                # plot alignments
+                al = sess.run(g.alignments)
+                plot_alignment(al[0].T[::-1, :], 0)  # (T_x, T_y/r)
+
                 for epoch in range(1, 100000000):
                     if sv.should_stop(): break
                     for step in tqdm(range(g.num_batch), total=g.num_batch, ncols=70, leave=False, unit='b'):
@@ -107,10 +114,7 @@ if __name__ == '__main__':
 
                     # plot alignments
                     al = sess.run(g.alignments)
-                    plot_alignment(al[0].T, gs) # (T_x, T_y/r)
-                    print(al[0].T.argmax(0))
-                    fout.write("gs={}".format(gs))
-                    fout.write("alignment\n{}".format(al[0].T))
+                    plot_alignment(al[0].T[::-1, :], gs) # (T_x, T_y/r)
 
                     # break
                     if gs > hp.num_iterations: break

@@ -38,6 +38,9 @@ def embed(inputs, vocab_size, num_units, zero_pad=True, scope="embedding", reuse
         if zero_pad:
             lookup_table = tf.concat((tf.zeros(shape=[1, num_units]), 
                                       lookup_table[1:, :]), 0)
+
+        outputs = tf.nn.embedding_lookup(lookup_table, inputs)
+
     return tf.nn.embedding_lookup(lookup_table, inputs)   
  
 def normalize(inputs, 
@@ -316,7 +319,7 @@ def attention_block(queries,
                     reuse=None):
     '''Attention block.
      Args:
-       queries: A 3-D tensor with shape of [batch, T_y//r, dec_channels].
+       queries: A 3-D tensor with shape of [batch, T_y//r, embed_size].
        keys: A 3-D tensor with shape of [batch, T_x, embed_size].
        vals: A 3-D tensor with shape of [batch, T_x, embed_size].
        num_units: An int. Attention size.
@@ -335,10 +338,10 @@ def attention_block(queries,
     with tf.variable_scope(scope, reuse=reuse):
         if hp.sinusoid:
             queries += positional_encoding(queries[:, :, 0],
-                                          num_units=hp.dec_channels,
+                                          num_units=hp.embed_size,
                                           position_rate=1.,
                                           zero_pad=False,
-                                          scale=True)  # (N, T_y/r, d)
+                                          scale=True)  # (N, T_y/r, e)
             keys += positional_encoding(keys[:, :, 0],
                                         num_units=hp.embed_size,
                                         position_rate=(hp.T_y//hp.r)/hp.T_x,
@@ -347,7 +350,7 @@ def attention_block(queries,
         else:
             queries += embed(tf.tile(tf.expand_dims(tf.range(hp.T_y//hp.r), 0), [hp.batch_size, 1]),
                                   vocab_size=hp.T_y//hp.r,
-                                  num_units=hp.dec_channels,
+                                  num_units=hp.embed_size,
                                   zero_pad=False,
                                   scope="query_pe")
 
@@ -357,20 +360,37 @@ def attention_block(queries,
                                   zero_pad=False,
                                   scope="key_pe")
 
-        queries = fc_block(queries,
-                           num_units=num_units,
-                           dropout_rate=0,
-                           norm_type=norm_type,
-                           training=training,
-                           activation_fn=activation_fn,
-                           scope="queries_fc_block")  # (N, T_y/r, a)
-        keys = fc_block(keys,
-                        num_units=num_units,
-                        dropout_rate=0,
-                        norm_type=norm_type,
-                        training=training,
-                        activation_fn=activation_fn,
-                        scope="keys_fc_block")  # (N, T_x, a)
+        if not hp.share_weights: # same initialization
+            # Query Projection
+            with tf.variable_scope("query_proj"):
+                W1 = tf.get_variable("W1", shape=(queries.get_shape()[0], queries.get_shape()[-1], num_units), initializer=tf.contrib.layers.xavier_initializer())
+                b1 = tf.get_variable("b1", shape=(num_units), initializer=tf.zeros_initializer())
+                queries = tf.matmul(queries, W1) + b1
+                queries = normalize(queries, type=norm_type, training=training, activation_fn=activation_fn)
+
+            # Key Projection
+            with tf.variable_scope("key_proj"):
+                W2 = tf.get_variable("W2", initializer=W1.initialized_value())
+                b2 = tf.get_variable("b2", shape=(num_units), initializer=tf.zeros_initializer())
+                keys = tf.matmul(keys, W2) + b2
+                keys = normalize(keys, type=norm_type, training=training, activation_fn=activation_fn)
+
+        else:
+            queries = fc_block(queries,
+                               num_units=num_units,
+                               dropout_rate=0,
+                               norm_type=norm_type,
+                               training=training,
+                               activation_fn=activation_fn,
+                               scope="queries_fc_block")  # (N, T_y/r, a)
+            keys = fc_block(keys,
+                            num_units=num_units,
+                            dropout_rate=0,
+                            norm_type=norm_type,
+                            training=training,
+                            activation_fn=activation_fn,
+                            scope="queries_fc_block",
+                            reuse=True)  # (N, T_x, a)
         vals = fc_block(vals,
                         num_units=num_units,
                         dropout_rate=0,
@@ -381,11 +401,12 @@ def attention_block(queries,
 
         attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
 
-        # Key Masking
-        _, Ty, Tx = attention_weights.get_shape().as_list() # Ty=T_y/r, Tx = T_x
-        key_masks = tf.tile(tf.expand_dims(masks, 1), [1, Ty, 1])  # (N, T_y/r, T_x)
-        paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1) # (N, T_y/r, T_x)
-        attention_weights = tf.where(tf.equal(key_masks, 0), paddings, attention_weights)  # (N, T_y/r, T_x)
+        _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=T_y/r, Tx = T_x
+        paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, T_y/r, T_x)
+        if hp.key_masking:
+            # Key Masking
+            key_masks = tf.tile(tf.expand_dims(masks, 1), [1, Ty, 1])  # (N, T_y/r, T_x)
+            attention_weights = tf.where(tf.equal(key_masks, 0), paddings, attention_weights)  # (N, T_y/r, T_x)
 
         if training:
             alignments = tf.nn.softmax(attention_weights)
@@ -403,7 +424,7 @@ def attention_block(queries,
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
-                          num_units=hp.dec_channels,
+                          num_units=hp.embed_size,
                           dropout_rate=0,
                           norm_type=norm_type,
                           training=training,

@@ -84,7 +84,7 @@ def decoder(inputs,
         # Decoder PreNet. inputs:(N, T_y/r, d)
         for i in range(hp.dec_layers):
             inputs = fc_block(inputs,
-                              num_units=hp.dec_channels,
+                              num_units=hp.embed_size,
                               dropout_rate=0 if i==0 else hp.dropout_rate,
                               norm_type=hp.norm_type,
                               activation_fn=tf.nn.relu,
