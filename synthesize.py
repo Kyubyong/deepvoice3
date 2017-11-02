@@ -61,7 +61,7 @@ def synthesize():
     for i, mag in enumerate(mags):
         # generate wav files
         mag = mag*hp.mag_std + hp.mag_mean # denormalize
-        audio = spectrogram2wav(np.exp(mag))
+        audio = spectrogram2wav(np.power(10, mag))
         write(hp.sampledir + "/{}_{}.wav".format(mname, i), hp.sr, audio)
                                           
 if __name__ == '__main__':
