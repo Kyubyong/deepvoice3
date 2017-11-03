@@ -17,6 +17,7 @@ import os
 import unicodedata
 
 def text_normalize(sent):
+    '''Remove accents and lower strings.'''
     def _strip_accents(s):
         return ''.join(c for c in unicodedata.normalize('NFD', s)
                        if unicodedata.category(c) != 'Mn')
@@ -26,7 +27,7 @@ def text_normalize(sent):
     return normalized
 
 def load_vocab():
-    vocab = "PE abcdefghijklmnopqrstuvwxyz'"  # P: Padding E: End of Sentence
+    vocab = "PE abcdefghijklmnopqrstuvwxyz'.?"  # P: Padding E: End of Sentence
     char2idx = {char: idx for idx, char in enumerate(vocab)}
     idx2char = {idx: char for idx, char in enumerate(vocab)}
     return char2idx, idx2char

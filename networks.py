@@ -33,7 +33,7 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
                           num_units=hp.enc_channels,
                           dropout_rate=0,
                           norm_type=hp.norm_type,
-                          activation_fn=tf.nn.relu,
+                          activation_fn=None,
                           training=training,
                           scope="prenet_fc_block") # (N, T_x, c)
 
@@ -41,7 +41,6 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
         for i in range(hp.enc_layers):
             tensor = conv_block(tensor,
                                 size=hp.enc_filter_size,
-                                dropout_rate=0,
                                 norm_type=hp.norm_type,
                                 activation_fn=glu,
                                 training=training,
@@ -52,7 +51,7 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
                         num_units=hp.embed_size,
                         dropout_rate=0,
                         norm_type=hp.norm_type,
-                        activation_fn=tf.nn.relu,
+                        activation_fn=None,
                         training=training,
                         scope="postnet_fc_block") # (N, T_x, E)
         vals = tf.sqrt(0.5) * (keys + embedding) # (N, T_x, E)
@@ -84,7 +83,7 @@ def decoder(inputs,
         # Decoder PreNet. inputs:(N, T_y/r, d)
         for i in range(hp.dec_layers):
             inputs = fc_block(inputs,
-                              num_units=hp.dec_channels,
+                              num_units=hp.embed_size,
                               dropout_rate=0 if i==0 else hp.dropout_rate,
                               norm_type=hp.norm_type,
                               activation_fn=tf.nn.relu,
@@ -95,7 +94,6 @@ def decoder(inputs,
             # Causal Convolution Block. queries: (N, T_y/r, d)
             queries = conv_block(inputs,
                                  size=hp.dec_filter_size,
-                                 dropout_rate=0,
                                  padding="CAUSAL",
                                  norm_type=hp.norm_type,
                                  activation_fn=glu,
@@ -111,7 +109,7 @@ def decoder(inputs,
                                                                  dropout_rate=hp.dropout_rate,
                                                                  prev_max_attentions=prev_max_attentions,
                                                                  norm_type=hp.norm_type,
-                                                                 activation_fn=tf.nn.relu,
+                                                                 activation_fn=None,
                                                                  training=training,
                                                                  scope="attention_block_{}".format(i))
 
@@ -151,7 +149,6 @@ def converter(inputs, training=True, scope="decoder2", reuse=None):
         for i in range(hp.converter_layers):
             inputs = conv_block(inputs,
                                  size=hp.converter_filter_size,
-                                 dropout_rate=0,
                                  padding="SAME",
                                  norm_type=hp.norm_type,
                                  activation_fn=glu,

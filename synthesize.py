@@ -17,15 +17,11 @@ import tensorflow as tf
 from train import Graph
 from utils import spectrogram2wav
 from data_load import load_test_data
-import librosa.display
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 def synthesize():
     # Load graph
     g = Graph(training=False); print("Graph loaded")
-    x = load_test_data()
+    X = load_test_data()
     with g.graph.as_default():
         sv = tf.train.Supervisor()
         with sv.managed_session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
@@ -37,32 +33,33 @@ def synthesize():
             mname = open(hp.logdir + '/checkpoint', 'r').read().split('"')[1]
 
             # Inference
-            mels = np.zeros((hp.batch_size, hp.T_y//hp.r, hp.n_mels*hp.r), np.float32)
-            prev_max_attentions = np.zeros((hp.batch_size,), np.int32)
-            for j in range(hp.T_x):
-                print(j)
-                _mels, _max_attentions = sess.run([g.mels, g.max_attentions],
-                                                  {g.x: x,
-                                                   g.y1: mels,
-                                                   g.prev_max_attentions: prev_max_attentions})
-                mels[:, j, :] = _mels[:, j, :]
-                prev_max_attentions = _max_attentions[:, j]
-            librosa.display.specshow(librosa.power_to_db(mels[0], ref=np.max))
-            plt.colorbar(format='%+2.0f dB')
-            plt.title('Mel spectrogram')
-            plt.tight_layout()
-            plt.savefig('f.png')
-            plt.show()
-            np.save('temp.npy', mels[0])
-            mags = sess.run(g.mags, {g.mels: mels})
+            file_id = 1
+            for i in range(0, len(X), hp.batch_size):
+                x = X[i:i+hp.batch_size]
 
-    # Generate wav files
-    if not os.path.exists(hp.sampledir): os.makedirs(hp.sampledir)
-    for i, mag in enumerate(mags):
-        # generate wav files
-        mag = mag*hp.mag_std + hp.mag_mean # denormalize
-        audio = spectrogram2wav(np.power(10, mag))
-        write(hp.sampledir + "/{}_{}.wav".format(mname, i), hp.sr, audio)
+                # Get melspectrogram
+                mels = np.zeros((hp.batch_size, hp.T_y//hp.r, hp.n_mels*hp.r), np.float32)
+                prev_max_attentions = np.zeros((hp.batch_size,), np.int32)
+                for j in range(hp.T_x):
+                    _mels, _max_attentions = sess.run([g.mels, g.max_attentions],
+                                                      {g.x: x,
+                                                       g.y1: mels,
+                                                       g.prev_max_attentions: prev_max_attentions})
+                    mels[:, j, :] = _mels[:, j, :]
+                    prev_max_attentions = _max_attentions[:, j]
+
+                # Get magnitude
+                mags = sess.run(g.mags, {g.mels: mels})
+
+                # Generate wav files
+                if not os.path.exists(hp.sampledir): os.makedirs(hp.sampledir)
+                for mag in mags:
+                    print("file id=", file_id)
+                    # generate wav files
+                    mag = mag*hp.mag_std + hp.mag_mean # denormalize
+                    audio = spectrogram2wav(np.power(10, mag) * hp.sharpening_factor)
+                    write(hp.sampledir + "/{}_{}.wav".format(mname, file_id), hp.sr, audio)
+                    file_id += 1
                                           
 if __name__ == '__main__':
     synthesize()
