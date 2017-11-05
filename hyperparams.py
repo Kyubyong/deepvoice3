@@ -34,7 +34,7 @@ class Hyperparams:
     mel_std = 2.5
 
     # Model
-    norm_type = "bn" # TODO: weight normalization
+    norm_type = "ins" # Or bn, ln. TODO: weight normalization
     r = 4 # Reduction factor
     dropout_rate = .05
     ## Enocder
@@ -42,11 +42,11 @@ class Hyperparams:
     embed_size = 256 # == e
     enc_layers = 7
     enc_filter_size = 5
-    enc_channels = 64 # == c
+    enc_channels = 256 # == c
     ## Decoder
     dec_layers = 4
     dec_filter_size = 5
-    attention_size = 256 # == a
+    attention_size = 128 # == a
     ## Converter
     converter_layers = 5
     converter_filter_size = 5
@@ -54,15 +54,14 @@ class Hyperparams:
 
     # data
     data = 'LJSpeech-1.0'
-    max_duration = 10.0#10.10 # seconds
-    T_x = 180#150 # characters. maximum length of text.
+    max_duration = 10.0 # seconds
+    T_x = 180 # characters. maximum length of text.
     T_y = int(get_T_y(max_duration, sr, hop_length, r)) # Maximum length of sound (frames)
 
     # training scheme
-    optim = 'adam'
     lr = 0.001
-    logdir = "logdir/trial0"
-    sampledir = 'samples/trial0'
+    logdir = "logdir"
+    sampledir = 'samples'
     batch_size = 16
     max_grad_norm = 100.
     max_grad_val = 5.

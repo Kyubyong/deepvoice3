@@ -17,13 +17,12 @@ import os
 import unicodedata
 
 def text_normalize(sent):
-    '''Remove accents and lower strings.'''
+    '''Minimum text preprocessing'''
     def _strip_accents(s):
         return ''.join(c for c in unicodedata.normalize('NFD', s)
                        if unicodedata.category(c) != 'Mn')
 
     normalized = re.sub("[^ a-z']", "", _strip_accents(sent).lower())
-
     return normalized
 
 def load_vocab():
@@ -49,7 +48,7 @@ def load_train_data():
             dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
             mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
 
-    return texts, mels, dones, mags
+    return texts*100, mels*100, dones*100, mags*100
 
 def load_test_data():
     # Load vocabulary
@@ -58,7 +57,7 @@ def load_test_data():
     # Parse
     texts = []
     for line in codecs.open('test_sents.txt', 'r', 'utf-8'):
-        sent = text_normalize(line.strip()) + "E" # text normalization, E: EOS
+        sent = text_normalize(line).strip() + "E" # text normalization, E: EOS
         if len(sent) <= hp.T_x:
             sent += "P"*(hp.T_x-len(sent))
             texts.append([char2idx[char] for char in sent])

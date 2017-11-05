@@ -16,13 +16,13 @@ import tqdm
 
 
 def get_spectrograms(sound_file):
-    '''Extracts log(melspectrogram) and log(magnitude) from `sound_file`.
+    '''Returns normalized log(melspectrogram) and log(magnitude) from `sound_file`.
     Args:
       sound_file: A string. The full path of a sound file.
 
     Returns:
-      mel: A 2d array of shape (n_mels, T)
-      mag: A 2d array of shape (1+n_fft/2, T)
+      mel: A 2d array of shape (T, n_mels) <- Transposed
+      mag: A 2d array of shape (T, 1+n_fft/2) <- Transposed
     '''
     # Loading sound file
     y, sr = librosa.load(sound_file, sr=hp.sr)
@@ -71,7 +71,7 @@ def get_spectrograms(sound_file):
     dones = np.reshape(dones, (-1, hp.r))
     dones = np.equal(np.sum(dones, -1), 0).astype(np.int32) # 1 for done, 0 for undone.
 
-    return mel, dones, mag # (T/r, n_mels*r), (T/r,), (T, 1_n_fft/2)
+    return mel, dones, mag # (T/r, n_mels*r), (T/r,), (T, 1+n_fft/2)
 
 if __name__ == "__main__":
     wav_folder = os.path.join(hp.data, 'wavs')

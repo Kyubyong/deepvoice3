@@ -12,7 +12,7 @@ import tensorflow as tf
 import numpy as np
 
 
-def embed(inputs, vocab_size, num_units, zero_pad=False, scope="embedding", reuse=None):
+def embed(inputs, vocab_size, num_units, zero_pad=True, scope="embedding", reuse=None):
     '''Embeds a given tensor. 
     
     Args:
@@ -27,7 +27,7 @@ def embed(inputs, vocab_size, num_units, zero_pad=False, scope="embedding", reus
         by the same name.
         
     Returns:
-      A `Tensor` with one more rank than inputs's. The last dimesionality
+      A `Tensor` with one more rank than inputs's. The last dimensionality
         should be `num_units`.
     '''
     with tf.variable_scope(scope, reuse=reuse):
@@ -49,29 +49,27 @@ def normalize(inputs,
               epsilon=1e-8,
               training=True, 
               activation_fn=None,
-              reuse=None,
-              scope="normalize"):
+              scope="normalize",
+              reuse=None):
     '''Applies {batch|layer|weight} normalization.
     
     Args:
       inputs: A tensor with 2 or more dimensions, where the first dimension has
         `batch_size`. If type is `bn`, the normalization is over all but 
         the last dimension. Or if type is `ln`, the normalization is over 
-        the last dimension. Note that this is different from the native 
-        `tf.contrib.layers.batch_norm`. For this I recommend you change
-        a line in ``tensorflow/contrib/layers/python/layers/layer.py` 
-        as follows.
-        Before: mean, variance = nn.moments(inputs, axis, keep_dims=True)
-        After: mean, variance = nn.moments(inputs, [-1], keep_dims=True)
-      type: A string. Either "bn" or "ln".
+        the last dimension.
+      type: A string. Either "bn" or "ln" or "ins".
       decay: Decay for the moving average. Reasonable values for `decay` are close
         to 1.0, typically in the multiple-nines range: 0.999, 0.99, 0.9, etc.
         Lower `decay` value (recommend trying `decay`=0.9) if model experiences
         reasonably good training performance but poor validation and/or test
         performance.
-      training: Whether or not the layer is in training mode. W
+      epsilon: A floating number. A very small number for preventing ZeroDivision Error.
+      training: Whether or not the layer is in training mode.
       activation_fn: Activation function.
       scope: Optional scope for `variable_scope`.
+      reuse: Boolean, whether to reuse the weights of a previous layer
+        by the same name
       
     Returns:
       A tensor with the same shape and data dtype as `inputs`.
@@ -198,7 +196,6 @@ def conv_block(inputs,
     Args:
       inputs: A 3-D tensor with shape of [batch, time, depth].
       size: An int. Filter size.
-      dropout_rate: A float of [0, 1]. Dropout rate.
       padding: Either `same` or `valid` or `causal` (case-insensitive).
       norm_type: A string. See `normalize`.
       activation_fn: A string. Activation function.
@@ -321,9 +318,9 @@ def attention_block(queries,
                     reuse=None):
     '''Attention block.
      Args:
-       queries: A 3-D tensor with shape of [batch, T_y//r, embed_size].
-       keys: A 3-D tensor with shape of [batch, T_x, embed_size].
-       vals: A 3-D tensor with shape of [batch, T_x, embed_size].
+       queries: A 3-D tensor with shape of [batch, T_y//r, e].
+       keys: A 3-D tensor with shape of [batch, T_x, e].
+       vals: A 3-D tensor with shape of [batch, T_x, e].
        num_units: An int. Attention size.
        dropout_rate: A float of [0, 1]. Dropout rate.
        norm_type: A string. See `normalize`.
@@ -332,9 +329,6 @@ def attention_block(queries,
        scope: Optional scope for `variable_scope`.
        reuse: Boolean, whether to reuse the weights of a previous layer
          by the same name.
-
-     Returns:
-       A tensor with shape of [batch, time, num_units].
     '''
     _keys = keys
     with tf.variable_scope(scope, reuse=reuse):
@@ -349,7 +343,7 @@ def attention_block(queries,
                                     zero_pad=False,
                                     scale=True)  # (N, T_x, e)
 
-        # Query Projection
+        # Query Projection: (N, T_y, a)
         with tf.variable_scope("query_proj"):
             W1 = tf.get_variable("W1", shape=(queries.get_shape()[0], queries.get_shape()[-1], num_units),
                                  initializer=tf.contrib.layers.variance_scaling_initializer(factor=1.))
@@ -357,26 +351,24 @@ def attention_block(queries,
             queries = tf.matmul(queries, W1) + b1
             queries = normalize(queries, type=norm_type, training=training, activation_fn=activation_fn)
 
-        # Key Projection
+        # Key Projection: (N, T_x, a)
         with tf.variable_scope("key_proj"):
             W2 = tf.get_variable("W2", initializer=W1.initialized_value())
             b2 = tf.get_variable("b2", shape=(num_units), initializer=tf.zeros_initializer())
             keys = tf.matmul(keys, W2) + b2
             keys = normalize(keys, type=norm_type, training=training, activation_fn=activation_fn)
 
-        # Value Projection
-        with tf.variable_scope("val_proj"):
+        # Value Projection: (N, T_x, a)
         vals = fc_block(vals,
                         num_units=num_units,
                         dropout_rate=0,
                         norm_type=norm_type,
                         training=training,
-                        activation_fn=activation_fn) # (N, T_x, a)
+                        activation_fn=activation_fn,
+                        scope="vals_fc_block")  # (N, T_x, a)
 
         attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
-
         _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=T_y/r, Tx = T_x
-        paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, T_y/r, T_x)
 
         if training:
             alignments = tf.nn.softmax(attention_weights)
@@ -384,13 +376,14 @@ def attention_block(queries,
         else: # force monotonic attention
             key_masks = tf.sequence_mask(prev_max_attentions, Tx)
             key_masks = tf.tile(tf.expand_dims(key_masks, 1), [1, Ty, 1])
+            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, T_y/r, T_x)
             attention_weights = tf.where(tf.equal(key_masks, False), attention_weights, paddings)
             alignments = tf.nn.softmax(attention_weights)
-            max_attentions = tf.argmax(alignments, -1)
+            max_attentions = tf.argmax(alignments, -1) # (N, T_y/r)
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
         tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
-        tensor /= tf.sqrt(tf.to_float(Ty))
+        tensor *= tf.to_float(Tx) * tf.sqrt(1/tf.to_float(Tx))
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
@@ -399,6 +392,6 @@ def attention_block(queries,
                           norm_type=norm_type,
                           training=training,
                           activation_fn=activation_fn,
-                          scope="tensor_fc_block")  # (N, T_x, dec_channels)
+                          scope="tensor_fc_block")  # (N, T_x, e)
 
     return tensor, alignments, max_attentions
