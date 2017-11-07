@@ -17,6 +17,7 @@ import os
 import unicodedata
 
 def text_normalize(sent):
+    '''Minimum text preprocessing'''
     def _strip_accents(s):
         return ''.join(c for c in unicodedata.normalize('NFD', s)
                        if unicodedata.category(c) != 'Mn')
@@ -37,18 +38,31 @@ def load_train_data():
 
     # Parse
     texts, mels, dones, mags = [], [], [], []
-    metadata = os.path.join(hp.data, 'metadata.csv')
-    for line in codecs.open(metadata, 'r', 'utf-8'):
-        fname, _, sent = line.strip().split("|")
-        sent = text_normalize(sent) + "E" # text normalization, E: EOS
-        if len(sent) <= hp.T_x:
-            sent += "P"*(hp.T_x-len(sent))
-            texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
-            mels.append(os.path.join(hp.data, "mels", fname + ".npy"))
-            dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
-            mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
+    if hp.data=="LJSpeech-1.0":
+        metadata = os.path.join(hp.data, 'metadata.csv')
+        for line in codecs.open(metadata, 'r', 'utf-8'):
+            fname, _, sent = line.strip().split("|")
+            sent = text_normalize(sent) + "E" # text normalization, E: EOS
+            if len(sent) <= hp.Tx:
+                sent += "P"*(hp.Tx-len(sent))
+                texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
+                mels.append(os.path.join(hp.data, "mels", fname + ".npy"))
+                dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
+                mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
+    else: # kate
+        metadata = os.path.join(hp.data, 'text.tsv')
+        for line in codecs.open(metadata, 'r', 'utf-8'):
+            fname, sent, duration = line.strip().split("\t")
+            if not "therese_raquin" in fname: continue
+            sent = text_normalize(sent) + "E"  # text normalization, E: EOS
+            if len(sent) <= hp.Tx:
+                sent += "P" * (hp.Tx - len(sent))
+                texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
+                mels.append(os.path.join(hp.data, "mels", fname.split("/")[-1] + ".npy"))
+                dones.append(os.path.join(hp.data, "dones", fname.split("/")[-1] + ".npy"))
+                mags.append(os.path.join(hp.data, "mags", fname.split("/")[-1] + ".npy"))
 
-    return texts, mels, dones, mags
+    return texts*1, mels*1, dones*1, mags*1
 
 def load_test_data():
     # Load vocabulary
@@ -56,10 +70,10 @@ def load_test_data():
 
     # Parse
     texts = []
-    for line in codecs.open('test_sents.txt', 'r', 'utf-8'):
-        sent = text_normalize(line.strip()) + "E" # text normalization, E: EOS
-        if len(sent) <= hp.T_x:
-            sent += "P"*(hp.T_x-len(sent))
+    for line in codecs.open('sample_sents.txt', 'r', 'utf-8'):
+        sent = text_normalize(line).strip() + "E" # text normalization, E: EOS
+        if len(sent) <= hp.Tx:
+            sent += "P"*(hp.Tx-len(sent))
             texts.append([char2idx[char] for char in sent])
     texts = np.array(texts, np.int32)
     return texts
@@ -83,14 +97,14 @@ def get_batch():
         text, mel, done, mag = tf.train.slice_input_producer([texts, mels, dones, mags], shuffle=True)
 
         # Decoding.
-        text = tf.decode_raw(text, tf.int32) # (T_x,)
-        mel = tf.py_func(lambda x:np.load(x), [mel], tf.float32) # (T_y/r, n_mels*r)
-        done = tf.py_func(lambda x:np.load(x), [done], tf.int32) # (T_y,)
-        mag = tf.py_func(lambda x:np.load(x), [mag], tf.float32) # (T_y, 1+n_fft/2)
+        text = tf.decode_raw(text, tf.int32) # (Tx,)
+        mel = tf.py_func(lambda x:np.load(x), [mel], tf.float32) # (Ty, n_mels)
+        done = tf.py_func(lambda x:np.load(x), [done], tf.int32) # (Ty,)
+        mag = tf.py_func(lambda x:np.load(x), [mag], tf.float32) # (Ty, 1+n_fft/2)
 
-        # create batch queues
+        # Create batch queues
         texts, mels, dones, mags = tf.train.batch([text, mel, done, mag],
-                                shapes=[(hp.T_x,), (hp.T_y//hp.r, hp.n_mels*hp.r), (hp.T_y//hp.r,), (hp.T_y, 1+hp.n_fft//2)],
+                                shapes=[(hp.Tx,), (hp.Ty, hp.n_mels), (hp.Ty,), (hp.Ty, 1+hp.n_fft//2)],
                                 num_threads=32,
                                 batch_size=hp.batch_size, 
                                 capacity=hp.batch_size*32,   

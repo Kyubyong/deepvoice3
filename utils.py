@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 
 from hyperparams import Hyperparams as hp
 
-
 def spectrogram2wav(spectrogram):
     '''Convert spectrogram into a waveform using Griffin-lim's raw.
     '''
@@ -37,26 +36,45 @@ def invert_spectrogram(spectrogram):
     '''
     return librosa.istft(spectrogram, hp.hop_length, win_length=hp.win_length, window="hann")
 
-def plot_alignment(alignment, gs):
+def plot_alignment(alignments, gs, elapsed_time):
     """
     Plots the alignment
-
-    alignment: (numpy) matrix of shape (encoder_steps,decoder_steps)
-
+    alignment: A list of (numpy) matrix of shape (encoder_steps, decoder_steps)
     gs : (int) global step
+    elasped_time: seconds.
     """
-    a = alignment[:, 10]
+    hours = elapsed_time // 3600
+    minutes = (elapsed_time - 3600 * hours) // 60
 
-    fig, ax = plt.subplots()
-    im = ax.imshow(alignment, interpolation='none')
-    fig.colorbar(im, ax=ax)
-    plt.xlabel('Decoder timestep')
-    plt.ylabel('Encoder timestep')
-    plt.title('Global Steps={}'.format(gs))
-    plt.tight_layout()
-    plt.axis('off')
+    fig, axes = plt.subplots(nrows=len(alignments), ncols=1, figsize=(10, 10))
+    for i, ax in enumerate(axes.flat):
+        im = ax.imshow(alignments[i])
+        ax.axis('off')
+        ax.set_title("Layer {}".format(i))
+
+    fig.subplots_adjust(right=0.8, hspace=0.4)
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+    fig.colorbar(im, cax=cbar_ax)
+    plt.suptitle('{} Steps After {} hours {} minutes'.format(gs, hours, minutes))
     plt.savefig('{}/alignment_{}.png'.format(hp.logdir, gs), format='png')
+def plot_alignment2(alignments, gs, elapsed_time):
+    """
+    Plots the alignment
+    alignment: A list of (numpy) matrix of shape (encoder_steps, decoder_steps)
+    gs : (int) global step
+    elasped_time: seconds.
+    """
+    hours = elapsed_time // 3600
+    minutes = (elapsed_time - 3600 * hours) // 60
 
-    # figure = plt.figure()
-    # plt.bar(np.arange(len(a)), a)
-    # plt.savefig('{}/a_{}.png'.format(hp.logdir, gs), format='png')
+    fig, axes = plt.subplots(nrows=len(alignments), ncols=1, figsize=(10, 10))
+    for i, ax in enumerate(axes.flat):
+        im = ax.plot(alignments[i])
+        ax.axis('off')
+        ax.set_title("Layer {}".format(i))
+
+    fig.subplots_adjust(right=0.8, hspace=0.4)
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+    fig.colorbar(im, cax=cbar_ax)
+    plt.suptitle('{} Steps After {} hours {} minutes'.format(gs, hours, minutes))
+    plt.savefig('{}/alignment_{}.png'.format(hp.logdir, gs), format='png')
