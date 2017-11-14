@@ -6,7 +6,7 @@ https://www.github.com/kyubyong/deepvoice3
 '''
 import math
 
-def get_T_y(duration, sr, hop_length, r):
+def get_Ty(duration, sr, hop_length, r):
     '''Calculates number of paddings for reduction'''
     def _roundup(x):
         return math.ceil(x * .1) * 10
@@ -55,13 +55,13 @@ class Hyperparams:
     # data
     data = 'LJSpeech-1.0'
     max_duration = 10.0 # seconds
-    T_x = 180 # characters. maximum length of text.
-    T_y = int(get_T_y(max_duration, sr, hop_length, r)) # Maximum length of sound (frames)
+    Tx = 180 # characters. maximum length of text.
+    Ty = int(get_Ty(max_duration, sr, hop_length, r)) # Maximum length of sound (frames)
 
     # training scheme
     lr = 0.001
-    logdir = "logdir"
-    sampledir = 'samples'
+    logdir = "logdir/t10"
+    sampledir = 'samples/t10'
     batch_size = 16
     max_grad_norm = 100.
     max_grad_val = 5.

@@ -166,8 +166,7 @@ def conv1d(inputs,
         
         params = {"inputs":inputs, "filters":filters, "kernel_size":size,
                   "dilation_rate":rate, "padding":padding, "activation":activation_fn,
-                  "use_bias":use_bias, "reuse":reuse,
-                  "kernel_initializer":tf.contrib.layers.variance_scaling_initializer(factor=4.)}
+                  "use_bias":use_bias, "reuse":reuse}
         
         outputs = tf.layers.conv1d(**params)
     return outputs
@@ -175,12 +174,12 @@ def conv1d(inputs,
 def glu(inputs):
     '''Gated linear unit
     Args:
-      inputs: A tensor of even dimensions. (N, T_x, 2c)
+      inputs: A tensor of even dimensions. (N, Tx, 2c)
 
     Returns:
       outputs: A tensor of the same shape and dtype as inputs.
     '''
-    A, B = tf.split(inputs, 2, -1)  # (N, T_x, c) * 2
+    A, B = tf.split(inputs, 2, -1)  # (N, Tx, c) * 2
     outputs = A*tf.nn.sigmoid(B)
     return outputs
 
@@ -210,7 +209,7 @@ def conv_block(inputs,
     num_inputs = inputs.get_shape()[-1]
     _inputs = inputs
     with tf.variable_scope(scope, reuse=reuse):
-        inputs = conv1d(inputs, num_inputs*2, size=size, padding=padding)  # (N, T_x, c*2)
+        inputs = conv1d(inputs, num_inputs*2, size=size, padding=padding)  # (N, Tx, c*2)
         inputs = normalize(inputs, type=norm_type, training=training, activation_fn=activation_fn)
         inputs += _inputs # residual connection
         inputs *= tf.sqrt(0.5) # scale
@@ -246,8 +245,7 @@ def fc_block(inputs,
         # Transformation
         tensor = tf.layers.dense(inputs,
                                  units=num_units,
-                                 activation=None,
-                                 kernel_initializer=tf.contrib.layers.variance_scaling_initializer(factor=1.-dropout_rate))  # (N, T_x, c1)
+                                 activation=None)  # (N, Tx, c1)
 
         # Normalization -> Activation
         tensor = normalize(tensor, type=norm_type, training=training, activation_fn=activation_fn)
@@ -307,20 +305,18 @@ def positional_encoding(inputs,
 def attention_block(queries,
                     keys,
                     vals,
-                    masks,
                     num_units,
                     dropout_rate=0,
                     prev_max_attentions=None,
                     norm_type=None,
-                    activation_fn=None,
                     training=False,
                     scope="attention_block",
                     reuse=None):
     '''Attention block.
      Args:
-       queries: A 3-D tensor with shape of [batch, T_y//r, e].
-       keys: A 3-D tensor with shape of [batch, T_x, e].
-       vals: A 3-D tensor with shape of [batch, T_x, e].
+       queries: A 3-D tensor with shape of [batch, Ty//r, e].
+       keys: A 3-D tensor with shape of [batch, Tx, e].
+       vals: A 3-D tensor with shape of [batch, Tx, e].
        num_units: An int. Attention size.
        dropout_rate: A float of [0, 1]. Dropout rate.
        norm_type: A string. See `normalize`.
@@ -336,39 +332,39 @@ def attention_block(queries,
                                       num_units=hp.embed_size,
                                       position_rate=1.,
                                       zero_pad=False,
-                                      scale=True)  # (N, T_y/r, e)
+                                      scale=True)  # (N, Ty/r, e)
         keys += positional_encoding(keys[:, :, 0],
                                     num_units=hp.embed_size,
-                                    position_rate=(hp.T_y//hp.r)/hp.T_x,
+                                    position_rate=(hp.Ty//hp.r)/hp.Tx,
                                     zero_pad=False,
-                                    scale=True)  # (N, T_x, e)
+                                    scale=True)  # (N, Tx, e)
 
-        # Query Projection: (N, T_y, a)
+        # Query Projection: (N, Ty, a)
         with tf.variable_scope("query_proj"):
             W1 = tf.get_variable("W1", shape=(queries.get_shape()[0], queries.get_shape()[-1], num_units),
                                  initializer=tf.contrib.layers.variance_scaling_initializer(factor=1.))
             b1 = tf.get_variable("b1", shape=(num_units), initializer=tf.zeros_initializer())
             queries = tf.matmul(queries, W1) + b1
-            queries = normalize(queries, type=norm_type, training=training, activation_fn=activation_fn)
+            queries = normalize(queries, type=norm_type, training=training, activation_fn=None)
 
-        # Key Projection: (N, T_x, a)
+        # Key Projection: (N, Tx, a)
         with tf.variable_scope("key_proj"):
             W2 = tf.get_variable("W2", initializer=W1.initialized_value())
             b2 = tf.get_variable("b2", shape=(num_units), initializer=tf.zeros_initializer())
             keys = tf.matmul(keys, W2) + b2
-            keys = normalize(keys, type=norm_type, training=training, activation_fn=activation_fn)
+            keys = normalize(keys, type=norm_type, training=training, activation_fn=None)
 
-        # Value Projection: (N, T_x, a)
+        # Value Projection: (N, Tx, a)
         vals = fc_block(vals,
                         num_units=num_units,
                         dropout_rate=0,
                         norm_type=norm_type,
                         training=training,
-                        activation_fn=activation_fn,
-                        scope="vals_fc_block")  # (N, T_x, a)
+                        activation_fn=None,
+                        scope="vals_fc_block")  # (N, Tx, a)
 
-        attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, T_y/r, T_x)
-        _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=T_y/r, Tx = T_x
+        attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, Ty/r, Tx)
+        _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=Ty/r, Tx = Tx
 
         if training:
             alignments = tf.nn.softmax(attention_weights)
@@ -376,14 +372,14 @@ def attention_block(queries,
         else: # force monotonic attention
             key_masks = tf.sequence_mask(prev_max_attentions, Tx)
             key_masks = tf.tile(tf.expand_dims(key_masks, 1), [1, Ty, 1])
-            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, T_y/r, T_x)
+            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, Ty/r, Tx)
             attention_weights = tf.where(tf.equal(key_masks, False), attention_weights, paddings)
             alignments = tf.nn.softmax(attention_weights)
-            max_attentions = tf.argmax(alignments, -1) # (N, T_y/r)
+            max_attentions = tf.argmax(alignments, -1) # (N, Ty/r)
 
         tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
-        tensor = tf.matmul(tensor, vals)  # (N, T_y/r, a)
-        tensor *= tf.to_float(Tx) * tf.sqrt(1/tf.to_float(Tx))
+        tensor = tf.matmul(tensor, vals)  # (N, Ty/r, a)
+        tensor *= tf.sqrt(1/tf.to_float(Tx))
 
         # Restore shape for residual connection
         tensor = fc_block(tensor,
@@ -391,7 +387,10 @@ def attention_block(queries,
                           dropout_rate=0,
                           norm_type=norm_type,
                           training=training,
-                          activation_fn=activation_fn,
-                          scope="tensor_fc_block")  # (N, T_x, e)
+                          activation_fn=None,
+                          scope="tensor_fc_block")  # (N, Tx, e)
+
+        # returns the alignment of the first one
+        alignments = tf.transpose(alignments[0])[::-1, :]  # (Tx, Ty)
 
     return tensor, alignments, max_attentions

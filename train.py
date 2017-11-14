@@ -24,43 +24,43 @@ class Graph:
         self.graph = tf.Graph()
         with self.graph.as_default():
             # Data Feeding
-            ## x: Text. (N, T_x), int32
-            ## y1: Reduced melspectrogram. (N, T_y//r, n_mels*r) float32
-            ## y2: Reduced dones. (N, T_y//r,) int32
-            ## z: Magnitude. (N, T_y, n_fft//2+1) float32
+            ## x: Text. (N, Tx), int32
+            ## y1: Reduced melspectrogram. (N, Ty//r, n_mels*r) float32
+            ## y2: Reduced dones. (N, Ty//r,) int32
+            ## z: Magnitude. (N, Ty, n_fft//2+1) float32
             if training:
                 self.x, self.y1, self.y2, self.z, self.num_batch = get_batch()
-                self.prev_max_attentions = tf.constant([0]*hp.batch_size)
+                self.prev_max_attentions = tf.ones(shape=(hp.dec_layers, hp.batch_size), dtype=tf.int32)
             else: # Evaluation
-                self.x = tf.placeholder(tf.int32, shape=(hp.batch_size, hp.T_x))
-                self.y1 = tf.placeholder(tf.float32, shape=(hp.batch_size, hp.T_y//hp.r, hp.n_mels*hp.r))
-                self.prev_max_attentions = tf.placeholder(tf.int32, shape=(hp.batch_size,))
+                self.x = tf.placeholder(tf.int32, shape=(hp.batch_size, hp.Tx))
+                self.y1 = tf.placeholder(tf.float32, shape=(hp.batch_size, hp.Ty//hp.r, hp.n_mels*hp.r))
+                self.prev_max_attentions = tf.placeholder(tf.int32, shape=(hp.dec_layers, hp.batch_size,))
 
-            # Get decoder inputs: feed last frames only (N, T_y//r, n_mels)
+            # Get decoder inputs: feed last frames only (N, Ty//r, n_mels)
             self.decoder_input = tf.concat((tf.zeros_like(self.y1[:, :1, -hp.n_mels:]), self.y1[:, :-1, -hp.n_mels:]), 1)
 
             # Networks
             with tf.variable_scope("net"):
-                # Encoder. keys: (N, T_x, e), vals: (N, T_x, e)
-                self.keys, self.vals, self.masks = encoder(self.x,
+                # Encoder. keys: (N, Tx, e), vals: (N, Tx, e)
+                self.keys, self.vals = encoder(self.x,
                                                training=training,
                                                scope="encoder")
 
-                # Decoder. mel_output: (N, T_y/r, n_mels*r), done_output: (N, T_y/r, 2),
-                # decoder_output: (N, T_y/r, e), alignments: (N, T_y, T_x)
-                self.mel_output, self.done_output, self.decoder_output, self.alignments, self.max_attentions = decoder(self.decoder_input,
+                # Decoder. mel_output: (N, Ty/r, n_mels*r), done_output: (N, Ty/r, 2),
+                # decoder_output: (N, Ty/r, e), alignments_li: dec_layers*(N, Ty/r, Tx)
+                # max_attentions_li: dec_layers*(N, T_y/r)
+                self.mel_output, self.done_output, self.decoder_output, self.alignments_li, self.max_attentions_li = decoder(self.decoder_input,
                                                                                      self.keys,
                                                                                      self.vals,
-                                                                                     self.masks,
                                                                                      self.prev_max_attentions,
                                                                                      training=training,
                                                                                      scope="decoder",
                                                                                      reuse=None)
-                # Restore shape. converter_input: (N, T_y, e/r)
-                self.converter_input = tf.reshape(self.decoder_output, (hp.batch_size, hp.T_y, -1))
+                # Restore shape. converter_input: (N, Ty, e/r)
+                self.converter_input = tf.reshape(self.decoder_output, (hp.batch_size, hp.Ty, -1))
                 self.converter_input = normalize(self.converter_input, type=hp.norm_type, training=training, activation_fn=tf.nn.relu)
 
-                # Converter. mag_output: (N, T_y, 1+n_fft//2)
+                # Converter. mag_output: (N, Ty, 1+n_fft//2)
                 self.mag_output = converter(self.converter_input,
                                           training=training,
                                           scope="converter")
@@ -98,22 +98,21 @@ if __name__ == '__main__':
         sv = tf.train.Supervisor(logdir=hp.logdir, save_model_secs=0)
         with sv.managed_session() as sess:
             # plot initial alignments
-            al = sess.run(g.alignments)
-            plot_alignment(al[0].T[::-1, :], 0, 0)  # (T_x, T_y/r)
+            alignments_li = sess.run(g.alignments_li)
+            plot_alignment(alignments_li, 0)  # (Tx, Ty/r)
 
             while 1:
                 if sv.should_stop(): break
                 for step in tqdm(range(g.num_batch), total=g.num_batch, ncols=70, leave=False, unit='b'):
-                    gs, _ = sess.run([g.gs, g.train_op])
+                    gs, _ = sess.run([g.global_step, g.train_op])
 
                     # Write checkpoint files at every epoch
-                    if gs > 0 and gs%100==0:
+                    if gs % 1000 == 0:
                         sv.saver.save(sess, hp.logdir + '/model_gs_%d' % (gs))
 
                         # plot alignments
-                        al = sess.run(g.alignments)
-                        elapsed_time = time.time()-start_time
-                        plot_alignment(al[0].T[::-1, :], gs, elapsed_time) # (T_x, T_y/r)
+                        alignments_li = sess.run(g.alignments_li)
+                        plot_alignment(alignments_li, str(gs // 1000) + "k")  # (Tx, Ty)
 
                 # break
                 if gs > hp.num_iterations: break
