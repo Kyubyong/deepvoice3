@@ -102,7 +102,7 @@ def conv_block(inputs,
                             dtype=tf.float32,
                             initializer=tf.zeros_initializer)
 
-        V_norm = tf.nn.l2_normalize(V.initialized_value(), [0, 1])  # (width, in_dim, out_dim)
+        V_norm = tf.nn.l2_normalize(V, [0, 1])  # (width, in_dim, out_dim)
         W = V_norm * tf.reshape(g, [1, 1, num_units*2])
 
         outputs = tf.nn.convolution(inputs, W, padding, dilation_rate=[rate]) + b
@@ -146,7 +146,7 @@ def fc_block(inputs,
                                 factor=(1. - dropout_rate)))
         b = tf.get_variable('b', shape=(num_units), dtype=tf.float32, initializer=tf.zeros_initializer)
 
-        V_norm = tf.nn.l2_normalize(V.initialized_value(), [0]) # (in_dim, num_units)
+        V_norm = tf.nn.l2_normalize(V, [0]) # (in_dim, num_units)
         W = V_norm * tf.expand_dims(g, 0)
 
         outputs = tf.matmul(tf.reshape(inputs, (-1, in_dim)), W) + b # (N*T, num_units)
