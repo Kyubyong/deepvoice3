@@ -43,134 +43,6 @@ def embed(inputs, vocab_size, num_units, zero_pad=True, scope="embedding", reuse
 
     return outputs
  
-def normalize(inputs, 
-              type="bn",
-              decay=.999,
-              epsilon=1e-8,
-              training=True, 
-              activation_fn=None,
-              scope="normalize",
-              reuse=None):
-    '''Applies {batch|layer|weight} normalization.
-    
-    Args:
-      inputs: A tensor with 2 or more dimensions, where the first dimension has
-        `batch_size`. If type is `bn`, the normalization is over all but 
-        the last dimension. Or if type is `ln`, the normalization is over 
-        the last dimension.
-      type: A string. Either "bn" or "ln" or "ins".
-      decay: Decay for the moving average. Reasonable values for `decay` are close
-        to 1.0, typically in the multiple-nines range: 0.999, 0.99, 0.9, etc.
-        Lower `decay` value (recommend trying `decay`=0.9) if model experiences
-        reasonably good training performance but poor validation and/or test
-        performance.
-      epsilon: A floating number. A very small number for preventing ZeroDivision Error.
-      training: Whether or not the layer is in training mode.
-      activation_fn: Activation function.
-      scope: Optional scope for `variable_scope`.
-      reuse: Boolean, whether to reuse the weights of a previous layer
-        by the same name
-      
-    Returns:
-      A tensor with the same shape and data dtype as `inputs`.
-    '''
-    if type=="bn":
-        inputs_shape = inputs.get_shape()
-        inputs_rank = inputs_shape.ndims
-        
-        # use fused batch norm if inputs_rank in [2, 3, 4] as it is much faster.
-        # pay attention to the fact that fused_batch_norm requires shape to be rank 4 of NHWC.
-        if inputs_rank in [2, 3, 4]:
-            if inputs_rank==2:
-                inputs = tf.expand_dims(inputs, axis=1)
-                inputs = tf.expand_dims(inputs, axis=2)
-            elif inputs_rank==3:
-                inputs = tf.expand_dims(inputs, axis=1)
-            
-            outputs = tf.contrib.layers.batch_norm(inputs=inputs, 
-                                               decay=decay,
-                                               center=True, 
-                                               scale=True, 
-                                               updates_collections=None,
-                                               is_training=training,
-                                               scope=scope,
-                                               fused=True,
-                                               reuse=reuse)
-            # restore original shape
-            if inputs_rank==2:
-                outputs = tf.squeeze(outputs, axis=[1, 2])
-            elif inputs_rank==3:
-                outputs = tf.squeeze(outputs, axis=1)
-        else: # fallback to naive batch norm
-            outputs = tf.contrib.layers.batch_norm(inputs=inputs, 
-                                               decay=decay,
-                                               center=True, 
-                                               scale=True, 
-                                               updates_collections=None,
-                                               training=training,
-                                               scope=scope,
-                                               reuse=reuse,
-                                               fused=False)    
-    elif type in ("ln",  "ins"):
-        reduction_axis = -1 if type=="ln" else 1   
-        with tf.variable_scope(scope, reuse=reuse):
-            inputs_shape = inputs.get_shape()
-            params_shape = inputs_shape[-1:]
-        
-            mean, variance = tf.nn.moments(inputs, [reduction_axis], keep_dims=True)
-            beta = tf.Variable(tf.zeros(params_shape))
-            gamma = tf.Variable(tf.ones(params_shape))
-            normalized = (inputs - mean) / ( (variance + epsilon) ** (.5) )
-            outputs = gamma * normalized + beta
-    else:
-        outputs = inputs
-    
-    if activation_fn:
-        outputs = activation_fn(outputs)
-                
-    return outputs
-
-def conv1d(inputs, 
-           filters=None, 
-           size=1, 
-           rate=1, 
-           padding="SAME", 
-           use_bias=True,
-           activation_fn=None,
-           scope="conv1d",
-           reuse=None):
-    '''
-    Args:
-      inputs: A 3-D tensor with shape of [batch, time, depth].
-      filters: An int. Number of outputs (=activation maps)
-      size: An int. Filter size.
-      rate: An int. Dilation rate.
-      padding: Either `same` or `valid` or `causal` (case-insensitive).
-      use_bias: A boolean.
-      scope: Optional scope for `variable_scope`.
-      reuse: Boolean, whether to reuse the weights of a previous layer
-        by the same name.
-    
-    Returns:
-      A masked tensor of the same shape and dtypes as `inputs`.
-    '''
-    with tf.variable_scope(scope):
-        if padding.lower()=="causal":
-            # pre-padding for causality
-            pad_len = (size - 1) * rate  # padding size
-            inputs = tf.pad(inputs, [[0, 0], [pad_len, 0], [0, 0]])
-            padding = "valid"
-        
-        if filters is None:
-            filters = inputs.get_shape().as_list[-1]
-        
-        params = {"inputs":inputs, "filters":filters, "kernel_size":size,
-                  "dilation_rate":rate, "padding":padding, "activation":activation_fn,
-                  "use_bias":use_bias, "reuse":reuse}
-        
-        outputs = tf.layers.conv1d(**params)
-    return outputs
-
 def glu(inputs):
     '''Gated linear unit
     Args:
@@ -179,15 +51,16 @@ def glu(inputs):
     Returns:
       outputs: A tensor of the same shape and dtype as inputs.
     '''
-    A, B = tf.split(inputs, 2, -1)  # (N, Tx, c) * 2
-    outputs = A*tf.nn.sigmoid(B)
+    a, b = tf.split(inputs, 2, -1)  # (N, Tx, c) * 2
+    outputs = a * tf.nn.sigmoid(b)
     return outputs
 
 def conv_block(inputs,
+               num_units=None,
                size=5,
+               rate=1,
                padding="SAME",
-               norm_type=None,
-               activation_fn=None,
+               dropout_rate=0,
                training=False,
                scope="conv_block",
                reuse=None):
@@ -202,24 +75,44 @@ def conv_block(inputs,
       scope: Optional scope for `variable_scope`.
       reuse: Boolean, whether to reuse the weights of a previous layer
         by the same name.
-
     Returns:
       A tensor of the same shape and dtype as inputs.
     '''
-    num_inputs = inputs.get_shape()[-1]
-    _inputs = inputs
-    with tf.variable_scope(scope, reuse=reuse):
-        inputs = conv1d(inputs, num_inputs*2, size=size, padding=padding)  # (N, Tx, c*2)
-        inputs = normalize(inputs, type=norm_type, training=training, activation_fn=activation_fn)
-        inputs += _inputs # residual connection
-        inputs *= tf.sqrt(0.5) # scale
+    in_dim = inputs.get_shape().as_list()[-1]
+    if num_units is None: num_units = in_dim
 
-    return inputs
+    with tf.variable_scope(scope, reuse=reuse):
+        inputs = tf.layers.dropout(inputs, rate=dropout_rate, training=training)
+
+        if padding.lower() == "causal":
+            # pre-padding for causality
+            pad_len = (size - 1) * rate  # padding size
+            inputs = tf.pad(inputs, [[0, 0], [pad_len, 0], [0, 0]])
+            padding = "VALID"
+
+        V = tf.get_variable('V',
+                            shape=[size, in_dim, num_units*2],
+                            dtype=tf.float32) # (width, in_dim, out_dim)
+        g = tf.get_variable('g',
+                            shape=(num_units*2,),
+                            dtype=tf.float32,
+                            initializer=tf.contrib.layers.variance_scaling_initializer(factor=(4.*(1.-dropout_rate))/size))
+        b = tf.get_variable('b',
+                            shape=(num_units*2,),
+                            dtype=tf.float32,
+                            initializer=tf.zeros_initializer)
+
+        V_norm = tf.nn.l2_normalize(V.initialized_value(), [0, 1])  # (width, in_dim, out_dim)
+        W = V_norm * tf.reshape(g, [1, 1, num_units*2])
+
+        outputs = tf.nn.convolution(inputs, W, padding, dilation_rate=[rate]) + b
+        outputs = glu(outputs)
+
+    return outputs
 
 def fc_block(inputs,
              num_units,
              dropout_rate=0,
-             norm_type=None,
              activation_fn=None,
              training=False,
              scope="fc_block",
@@ -235,23 +128,34 @@ def fc_block(inputs,
           scope: Optional scope for `variable_scope`.
           reuse: Boolean, whether to reuse the weights of a previous layer
             by the same name.
-
         Returns:
           A tensor with shape of [batch, time, num_units].
     '''
+    _, T, in_dim = inputs.get_shape().as_list()
     with tf.variable_scope(scope, reuse=reuse):
         inputs = tf.layers.dropout(inputs, rate=dropout_rate, training=training)
 
         # Transformation
-        tensor = tf.layers.dense(inputs,
-                                 units=num_units,
-                                 activation=None)  # (N, Tx, c1)
+        V = tf.get_variable('V',
+                            shape=[in_dim, num_units],
+                            dtype=tf.float32) # (in_dim, num_units)
+        g = tf.get_variable('g',
+                            shape=(num_units),
+                            dtype=tf.float32,
+                            initializer=tf.contrib.layers.variance_scaling_initializer(
+                                factor=(1. - dropout_rate)))
+        b = tf.get_variable('b', shape=(num_units), dtype=tf.float32, initializer=tf.zeros_initializer)
 
-        # Normalization -> Activation
-        tensor = normalize(tensor, type=norm_type, training=training, activation_fn=activation_fn)
+        V_norm = tf.nn.l2_normalize(V.initialized_value(), [0]) # (in_dim, num_units)
+        W = V_norm * tf.expand_dims(g, 0)
 
-    return tensor
+        outputs = tf.matmul(tf.reshape(inputs, (-1, in_dim)), W) + b # (N*T, num_units)
+        outputs = tf.reshape(outputs, (-1, T, num_units)) # (N, T, num_units)
 
+        if activation_fn is not None:
+            outputs = activation_fn(outputs)
+
+    return outputs
 
 def positional_encoding(inputs,
                         num_units,
@@ -305,11 +209,10 @@ def positional_encoding(inputs,
 def attention_block(queries,
                     keys,
                     vals,
-                    num_units,
                     dropout_rate=0,
                     prev_max_attentions=None,
-                    norm_type=None,
                     training=False,
+                    mononotic_attention=False,
                     scope="attention_block",
                     reuse=None):
     '''Attention block.
@@ -328,67 +231,61 @@ def attention_block(queries,
     '''
     _keys = keys
     with tf.variable_scope(scope, reuse=reuse):
-        queries += positional_encoding(queries[:, :, 0],
-                                      num_units=hp.embed_size,
-                                      position_rate=1.,
-                                      zero_pad=False,
-                                      scale=True)  # (N, Ty/r, e)
-        keys += positional_encoding(keys[:, :, 0],
-                                    num_units=hp.embed_size,
-                                    position_rate=(hp.Ty//hp.r)/hp.Tx,
-                                    zero_pad=False,
-                                    scale=True)  # (N, Tx, e)
+        # queries += positional_encoding(queries[:, :, 0],
+        #                               num_units=hp.embed_size,
+        #                               position_rate=1.,
+        #                               zero_pad=True,
+        #                               scale=True)  # (N, Ty/r, e)
+        # keys += positional_encoding(keys[:, :, 0],
+        #                             num_units=hp.embed_size,
+        #                             position_rate=(hp.Ty//hp.r)/hp.Tx,
+        #                             zero_pad=True,
+        #                             scale=True)  # (N, Tx, e)
+        #
+        # queries += embed(tf.tile(tf.expand_dims(tf.range(hp.Ty//hp.r), 0), [hp.batch_size, 1]),
+        #           vocab_size=hp.Ty,
+        #           num_units=hp.embed_size,
+        #           zero_pad=False,
+        #           scope="query_pe",
+        #           reuse=block_num!=0)
+        #
+        # keys += embed(tf.tile(tf.expand_dims(tf.range(hp.Tx), 0), [hp.batch_size, 1]),
+        #                  vocab_size=hp.Tx,
+        #                  num_units=hp.embed_size,
+        #                  zero_pad=False,
+        #                  scope="key_pe",
+        #                  reuse=block_num!=0)
 
-        # Query Projection: (N, Ty, a)
         with tf.variable_scope("query_proj"):
-            W1 = tf.get_variable("W1", shape=(queries.get_shape()[0], queries.get_shape()[-1], num_units),
-                                 initializer=tf.contrib.layers.variance_scaling_initializer(factor=1.))
-            b1 = tf.get_variable("b1", shape=(num_units), initializer=tf.zeros_initializer())
-            queries = tf.matmul(queries, W1) + b1
-            queries = normalize(queries, type=norm_type, training=training, activation_fn=None)
+            queries = fc_block(queries, hp.attention_size, training=training) # (N, Ty/r, a)
 
-        # Key Projection: (N, Tx, a)
         with tf.variable_scope("key_proj"):
-            W2 = tf.get_variable("W2", initializer=W1.initialized_value())
-            b2 = tf.get_variable("b2", shape=(num_units), initializer=tf.zeros_initializer())
-            keys = tf.matmul(keys, W2) + b2
-            keys = normalize(keys, type=norm_type, training=training, activation_fn=None)
+            keys = fc_block(keys, hp.attention_size, training=training) # (N, Tx, a)
 
-        # Value Projection: (N, Tx, a)
-        vals = fc_block(vals,
-                        num_units=num_units,
-                        dropout_rate=0,
-                        norm_type=norm_type,
-                        training=training,
-                        activation_fn=None,
-                        scope="vals_fc_block")  # (N, Tx, a)
+        with tf.variable_scope("value_proj"):
+            vals = fc_block(vals, hp.attention_size, training=training) # (N, Tx, a)
 
-        attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, Ty/r, Tx)
-        _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=Ty/r, Tx = Tx
+        with tf.variable_scope("alignments"):
+            attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, Ty/r, Tx)
 
-        if training:
-            alignments = tf.nn.softmax(attention_weights)
-            max_attentions = prev_max_attentions
-        else: # force monotonic attention
-            key_masks = tf.sequence_mask(prev_max_attentions, Tx)
-            key_masks = tf.tile(tf.expand_dims(key_masks, 1), [1, Ty, 1])
-            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, Ty/r, Tx)
-            attention_weights = tf.where(tf.equal(key_masks, False), attention_weights, paddings)
+            _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=Ty/r, Tx = Tx
+            if mononotic_attention: # for inference
+                key_masks = tf.sequence_mask(prev_max_attentions, Tx)
+                reverse_masks = tf.sequence_mask(Tx - hp.attention_win_size - prev_max_attentions, Tx)[:, ::-1]
+                masks = tf.logical_or(key_masks, reverse_masks)
+                masks = tf.tile(tf.expand_dims(masks, 1), [1, Ty, 1])
+                paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)  # (N, Ty/r, Tx)
+                attention_weights = tf.where(tf.equal(masks, False), attention_weights, paddings)
             alignments = tf.nn.softmax(attention_weights)
             max_attentions = tf.argmax(alignments, -1) # (N, Ty/r)
 
-        tensor = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
-        tensor = tf.matmul(tensor, vals)  # (N, Ty/r, a)
-        tensor *= tf.sqrt(1/tf.to_float(Tx))
+        with tf.variable_scope("context"):
+            ctx = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
+            ctx = tf.matmul(ctx, vals)  # (N, Ty/r, a)
+            ctx *= Tx * tf.sqrt(1/tf.to_float(Tx))
 
         # Restore shape for residual connection
-        tensor = fc_block(tensor,
-                          num_units=hp.embed_size,
-                          dropout_rate=0,
-                          norm_type=norm_type,
-                          training=training,
-                          activation_fn=None,
-                          scope="tensor_fc_block")  # (N, Tx, e)
+        tensor = fc_block(ctx, hp.embed_size, training=training)  # (N, Tx, e)
 
         # returns the alignment of the first one
         alignments = tf.transpose(alignments[0])[::-1, :]  # (Tx, Ty)

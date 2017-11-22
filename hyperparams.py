@@ -28,40 +28,40 @@ class Hyperparams:
     sharpening_factor = 1.4 # Exponent for amplifying the predicted magnitude
     n_iter = 50 # Number of inversion iterations
     preemphasis = .97 # or None
-    mag_mean = -4.
-    mag_std = 3.
-    mel_mean = -5
-    mel_std = 2.5
+    max_db = 100
+    ref_db = 20
 
     # Model
-    norm_type = "ins" # Or bn, ln. TODO: weight normalization
     r = 4 # Reduction factor
-    dropout_rate = .05
+    dropout_rate = .2
     ## Enocder
     vocab_size = 32 # [PE a-z'.?]
     embed_size = 256 # == e
     enc_layers = 7
     enc_filter_size = 5
-    enc_channels = 256 # == c
+    enc_channels = 64 # == c
     ## Decoder
     dec_layers = 4
     dec_filter_size = 5
-    attention_size = 128 # == a
+    attention_size = 128*2 # == a
     ## Converter
-    converter_layers = 5
+    converter_layers = 5*2
     converter_filter_size = 5
     converter_channels = 256 # == v
 
+    sinusoid = False
+    attention_win_size = 3
+
     # data
-    data = 'LJSpeech-1.0'
+    data = 'LJSpeech-1.0' # or 'nick (internal)'
     max_duration = 10.0 # seconds
     Tx = 180 # characters. maximum length of text.
     Ty = int(get_Ty(max_duration, sr, hop_length, r)) # Maximum length of sound (frames)
 
     # training scheme
     lr = 0.001
-    logdir = "logdir/t10"
-    sampledir = 'samples/t10'
+    logdir = "logdir"
+    sampledir = 'samples'
     batch_size = 16
     max_grad_norm = 100.
     max_grad_val = 5.

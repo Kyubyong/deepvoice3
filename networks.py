@@ -24,43 +24,31 @@ def encoder(inputs, training=True, scope="encoder", reuse=None):
       A collection of Hidden vectors. So-called memory. Has the shape of (N, Tx, e).
     '''
     with tf.variable_scope(scope, reuse=reuse):
-        # Text Embedding
-        embedding = embed(inputs, hp.vocab_size, hp.embed_size)  # (N, Tx, e)
+        with tf.variable_scope("text_embedding"):
+            embedding = embed(inputs, hp.vocab_size, hp.embed_size)  # (N, Tx, e)
 
-        # Encoder PreNet
-        tensor = fc_block(embedding,
-                          num_units=hp.enc_channels,
-                          dropout_rate=0,
-                          norm_type=hp.norm_type,
-                          activation_fn=None,
-                          training=training,
-                          scope="prenet_fc_block") # (N, Tx, c)
+        with tf.variable_scope("encoder_prenet"):
+            tensor = fc_block(embedding, hp.enc_channels, training=training) # (N, Tx, c)
 
-        # Convolution Blocks
-        for i in range(hp.enc_layers):
-            tensor = conv_block(tensor,
-                                size=hp.enc_filter_size,
-                                norm_type=hp.norm_type,
-                                activation_fn=glu,
-                                training=training,
-                                scope="encoder_conv_block_{}".format(i)) # (N, Tx, c)
+        with tf.variable_scope("encoder_conv"):
+            for i in range(hp.enc_layers):
+                outputs = conv_block(tensor,
+                                    size=hp.enc_filter_size,
+                                    rate=2**i,
+                                    training=training,
+                                    scope="encoder_conv_{}".format(i)) # (N, Tx, c)
+                tensor = (outputs + tensor) * tf.sqrt(0.5)
 
-        # Encoder PostNet
-        keys = fc_block(tensor,
-                        num_units=hp.embed_size,
-                        dropout_rate=0,
-                        norm_type=hp.norm_type,
-                        activation_fn=None,
-                        training=training,
-                        scope="postnet_fc_block") # (N, Tx, e)
-        vals = tf.sqrt(0.5) * (keys + embedding) # (N, Tx, e)
+        with tf.variable_scope("encoder_postnet"):
+            keys = fc_block(tensor, hp.embed_size, training=training) # (N, Tx, e)
+            vals = tf.sqrt(0.5) * (keys + embedding) # (N, Tx, e)
 
     return keys, vals
 
 def decoder(inputs,
             keys,
             vals,
-            prev_max_attentions=None,
+            prev_max_attentions_li=None,
             training=True,
             scope="decoder",
             reuse=None):
@@ -75,91 +63,106 @@ def decoder(inputs,
         by the same name.
     '''
     with tf.variable_scope(scope, reuse=reuse):
-        # Decoder PreNet. inputs:(N, Ty/r, e)
-        for i in range(hp.dec_layers):
-            inputs = fc_block(inputs,
-                              num_units=hp.embed_size,
-                              dropout_rate=0 if i==0 else hp.dropout_rate,
-                              norm_type=hp.norm_type,
-                              activation_fn=tf.nn.relu,
-                              training=training,
-                              scope="prenet_fc_block_{}".format(i))
+        with tf.variable_scope("decoder_prenet"):
+            for i in range(hp.dec_layers):
+                inputs = fc_block(inputs,
+                                  num_units=hp.embed_size,
+                                  dropout_rate=0 if i==0 else hp.dropout_rate,
+                                  activation_fn=tf.nn.relu,
+                                  training=training,
+                                  scope="decoder_prenet_{}".format(i)) # (N, Ty/r, a)
 
-        alignments_li, max_attentions_li = [], []
-        for i in range(hp.dec_layers):
-            # Causal Convolution Block. queries: (N, Ty/r, e)
-            queries = conv_block(inputs,
-                                 size=hp.dec_filter_size,
-                                 padding="CAUSAL",
-                                 norm_type=hp.norm_type,
-                                 activation_fn=glu,
-                                 training=training,
-                                 scope="decoder_conv_block_{}".format(i))
+        with tf.variable_scope("decoder_conv_att"):
+            with tf.variable_scope("positional_encoding"):
+                if hp.sinusoid:
+                    query_pe = positional_encoding(inputs[:, :, 0],
+                                                   num_units=hp.embed_size,
+                                                   position_rate=1.,
+                                                   zero_pad=False,
+                                                   scale=True)  # (N, Ty/r, e)
+                    key_pe = positional_encoding(keys[:, :, 0],
+                                                num_units=hp.embed_size,
+                                                position_rate=(hp.Ty // hp.r) / hp.Tx,
+                                                zero_pad=False,
+                                                scale=True)  # (N, Tx, e)
+                else:
+                    query_pe = embed(tf.tile(tf.expand_dims(tf.range(hp.Ty // hp.r), 0), [hp.batch_size, 1]),
+                             vocab_size=hp.Ty,
+                             num_units=hp.embed_size,
+                             zero_pad=False,
+                             scope="query_pe")
 
-            # Attention Block. tensor: (N, Ty/r, e), alignments: (N, Ty, Tx)
-            tensor, alignments, max_attentions = attention_block(queries,
-                                                                 keys,
-                                                                 vals,
-                                                                 num_units=hp.attention_size,
-                                                                 dropout_rate=hp.dropout_rate,
-                                                                 prev_max_attentions=prev_max_attentions[i],
-                                                                 norm_type=hp.norm_type,
-                                                                 training=training,
-                                                                 scope="attention_block_{}".format(i))
+                    key_pe = embed(tf.tile(tf.expand_dims(tf.range(hp.Tx), 0), [hp.batch_size, 1]),
+                                  vocab_size=hp.Tx,
+                                  num_units=hp.embed_size,
+                                  zero_pad=False,
+                                  scope="key_pe")
 
-            inputs = tensor + queries
-            alignments_li.append(alignments)
-            max_attentions_li.append(max_attentions)
+            alignments_li, max_attentions_li = [], []
+            for i in range(hp.dec_layers):
+                _inputs = inputs
+                queries = conv_block(inputs,
+                                     size=hp.dec_filter_size,
+                                     rate=2**i,
+                                     padding="CAUSAL",
+                                     training=training,
+                                     scope="decoder_conv_block_{}".format(i)) # (N, Ty/r, a)
+
+                inputs = (queries + inputs) * tf.sqrt(0.5)
+
+                # residual connection
+                queries = inputs + query_pe
+                keys += key_pe
+
+                # Attention Block.
+                # tensor: (N, Ty/r, e)
+                # alignments: (N, Ty/r, Tx)
+                # max_attentions: (N, Ty/r)
+                tensor, alignments, max_attentions = attention_block(queries,
+                                                                     keys,
+                                                                     vals,
+                                                                     dropout_rate=hp.dropout_rate,
+                                                                     prev_max_attentions=prev_max_attentions_li[i],
+                                                                     mononotic_attention=(not training and i>2),
+                                                                     training=training,
+                                                                     scope="attention_block_{}".format(i))
+
+                inputs = (tensor + queries) * tf.sqrt(0.5)
+                    # inputs = (inputs + _inputs) * tf.sqrt(0.5)
+                alignments_li.append(alignments)
+                max_attentions_li.append(max_attentions)
 
         decoder_output = inputs
 
-        # Readout layers: mel_output: (N, Ty/r, n_mels*r)
-        mel_output = fc_block(inputs,
-                        num_units=hp.n_mels*hp.r*2,
-                        dropout_rate=0,
-                        norm_type=hp.norm_type,
-                        activation_fn=None,
-                        training=training,
-                        scope="mels")  # (N, Ty/r, n_mels*r*2)
-        A, B = tf.split(mel_output, 2, -1)
-        mel_output = A*tf.nn.sigmoid(B)
+        with tf.variable_scope("mel_logits"):
+            mel_logits = fc_block(decoder_output, hp.n_mels*hp.r, training=training)  # (N, Ty/r, n_mels*r)
 
-        ## done_output: # (N, Ty/r, 2)
-        done_output = fc_block(inputs,
-                         num_units=2,
-                         dropout_rate=0,
-                         norm_type=hp.norm_type,
-                         activation_fn=None,
-                         training=training,
-                         scope="dones")
-    return mel_output, done_output, decoder_output, alignments_li, max_attentions_li
+        with tf.variable_scope("done_output"):
+            done_output = fc_block(inputs, 2, training=training) # (N, Ty/r, 2)
+
+    return mel_logits, done_output, decoder_output, alignments_li, max_attentions_li
 
 def converter(inputs, training=True, scope="converter", reuse=None):
     '''Converter
     Args:
-      inputs: A 3d tensor with shape of [N, Ty, e/r]. Activations of the reshaped outputs of the decoder.
+      inputs: A 3d tensor with shape of [N, Ty, v]. Activations of the reshaped outputs of the decoder.
       training: Whether or not the layer is in training mode.
       scope: Optional scope for `variable_scope`
       reuse: Boolean, whether to reuse the weights of a previous layer
         by the same name.
     '''
     with tf.variable_scope(scope, reuse=reuse):
-        for i in range(hp.converter_layers):
-            inputs = conv_block(inputs,
-                                 size=hp.converter_filter_size,
-                                 padding="SAME",
-                                 norm_type=hp.norm_type,
-                                 activation_fn=glu,
-                                 training=training,
-                                 scope="converter_conv_block_{}".format(i))  # (N, Ty/r, d)
+        with tf.variable_scope("converter_conv"):
+            for i in range(hp.converter_layers):
+                outputs = conv_block(inputs,
+                                     size=hp.converter_filter_size,
+                                     rate=2**i,
+                                     padding="SAME",
+                                     training=training,
+                                     scope="converter_conv_{}".format(i))  # (N, Ty/r, d)
+                inputs = (inputs + outputs) * tf.sqrt(0.5)
 
-        # Readout layer. mag_output: (N, Ty, n_fft/2+1)
-        mag_output = fc_block(inputs,
-                       num_units=hp.n_fft//2+1,
-                       dropout_rate=0,
-                       norm_type=hp.norm_type,
-                       activation_fn=None,
-                       training=training,
-                       scope="mag")
+        with tf.variable_scope("mag_logits"):
+            mag_logits = fc_block(inputs, hp.n_fft//2 + 1, training=training) # (N, Ty, n_fft/2+1)
 
-    return mag_output
+    return mag_logits
