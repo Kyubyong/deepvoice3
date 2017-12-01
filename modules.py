@@ -92,18 +92,19 @@ def conv_block(inputs,
 
         V = tf.get_variable('V',
                             shape=[size, in_dim, num_units*2],
-                            dtype=tf.float32) # (width, in_dim, out_dim)
-        g = tf.get_variable('g',
-                            shape=(num_units*2,),
                             dtype=tf.float32,
-                            initializer=tf.contrib.layers.variance_scaling_initializer(factor=(4.*(1.-dropout_rate))/size))
+                            initializer=tf.contrib.layers.variance_scaling_initializer(factor=(4.*(1.-dropout_rate)))) # (width, in_dim, out_dim)
+        g = tf.get_variable('g',
+                            dtype=tf.float32,
+                            initializer=tf.norm(V.initialized_value(), axis=(0, 1), keep_dims=True)
+                            )
         b = tf.get_variable('b',
                             shape=(num_units*2,),
                             dtype=tf.float32,
                             initializer=tf.zeros_initializer)
 
         V_norm = tf.nn.l2_normalize(V, [0, 1])  # (width, in_dim, out_dim)
-        W = V_norm * tf.reshape(g, [1, 1, num_units*2])
+        W = V_norm * g
 
         outputs = tf.nn.convolution(inputs, W, padding, dilation_rate=[rate]) + b
         outputs = glu(outputs)
@@ -138,16 +139,16 @@ def fc_block(inputs,
         # Transformation
         V = tf.get_variable('V',
                             shape=[in_dim, num_units],
-                            dtype=tf.float32) # (in_dim, num_units)
-        g = tf.get_variable('g',
-                            shape=(num_units),
                             dtype=tf.float32,
                             initializer=tf.contrib.layers.variance_scaling_initializer(
-                                factor=(1. - dropout_rate)))
+                                factor=(1. - dropout_rate))) # (in_dim, num_units)
+        g = tf.get_variable('g',
+                            dtype=tf.float32,
+                            initializer=tf.norm(V.initialized_value(), axis=0, keep_dims=True))
         b = tf.get_variable('b', shape=(num_units), dtype=tf.float32, initializer=tf.zeros_initializer)
 
         V_norm = tf.nn.l2_normalize(V, [0]) # (in_dim, num_units)
-        W = V_norm * tf.expand_dims(g, 0)
+        W = V_norm * g
 
         outputs = tf.matmul(tf.reshape(inputs, (-1, in_dim)), W) + b # (N*T, num_units)
         outputs = tf.reshape(outputs, (-1, T, num_units)) # (N, T, num_units)
@@ -160,7 +161,7 @@ def fc_block(inputs,
 def positional_encoding(inputs,
                         num_units,
                         position_rate=1.,
-                        zero_pad=True,
+                        zero_pad=False,
                         scale=True,
                         scope="positional_encoding",
                         reuse=None):
@@ -231,31 +232,6 @@ def attention_block(queries,
     '''
     _keys = keys
     with tf.variable_scope(scope, reuse=reuse):
-        # queries += positional_encoding(queries[:, :, 0],
-        #                               num_units=hp.embed_size,
-        #                               position_rate=1.,
-        #                               zero_pad=True,
-        #                               scale=True)  # (N, Ty/r, e)
-        # keys += positional_encoding(keys[:, :, 0],
-        #                             num_units=hp.embed_size,
-        #                             position_rate=(hp.Ty//hp.r)/hp.Tx,
-        #                             zero_pad=True,
-        #                             scale=True)  # (N, Tx, e)
-        #
-        # queries += embed(tf.tile(tf.expand_dims(tf.range(hp.Ty//hp.r), 0), [hp.batch_size, 1]),
-        #           vocab_size=hp.Ty,
-        #           num_units=hp.embed_size,
-        #           zero_pad=False,
-        #           scope="query_pe",
-        #           reuse=block_num!=0)
-        #
-        # keys += embed(tf.tile(tf.expand_dims(tf.range(hp.Tx), 0), [hp.batch_size, 1]),
-        #                  vocab_size=hp.Tx,
-        #                  num_units=hp.embed_size,
-        #                  zero_pad=False,
-        #                  scope="key_pe",
-        #                  reuse=block_num!=0)
-
         with tf.variable_scope("query_proj"):
             queries = fc_block(queries, hp.attention_size, training=training) # (N, Ty/r, a)
 
@@ -267,6 +243,13 @@ def attention_block(queries,
 
         with tf.variable_scope("alignments"):
             attention_weights = tf.matmul(queries, keys, transpose_b=True)  # (N, Ty/r, Tx)
+
+            # Key Masking
+            key_masks = tf.sign(tf.abs(tf.reduce_sum(keys, axis=-1)))  # (N, Tx)
+            key_masks = tf.tile(tf.expand_dims(key_masks, 1), [1, tf.shape(queries)[1], 1])  # (N, Ty/r, Tx)
+
+            paddings = tf.ones_like(attention_weights) * (-2 ** 32 + 1)
+            attention_weights = tf.where(tf.equal(key_masks, 0), paddings, attention_weights)  # (N, Ty/r, Tx)
 
             _, Ty, Tx = attention_weights.get_shape().as_list()  # Ty=Ty/r, Tx = Tx
             if mononotic_attention: # for inference
@@ -282,7 +265,7 @@ def attention_block(queries,
         with tf.variable_scope("context"):
             ctx = tf.layers.dropout(alignments, rate=dropout_rate, training=training)
             ctx = tf.matmul(ctx, vals)  # (N, Ty/r, a)
-            ctx *= Tx * tf.sqrt(1/tf.to_float(Tx))
+            ctx *= tf.rsqrt(tf.to_float(Tx))
 
         # Restore shape for residual connection
         tensor = fc_block(ctx, hp.embed_size, training=training)  # (N, Tx, e)
