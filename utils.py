@@ -1,34 +1,106 @@
 # -*- coding: utf-8 -*-
-#/usr/bin/python2
+# /usr/bin/python2
 '''
-By kyubyong park. kbpark.linguist@gmail.com. 
-https://www.github.com/kyubyong/deepvoice3
+By kyubyong park. kbpark.linguist@gmail.com.
+https://www.github.com/kyubyong/dc_tts
 '''
-from __future__ import print_function
+from __future__ import print_function, division
 
+from hyperparams import Hyperparams as hp
 import numpy as np
+import tensorflow as tf
 import librosa
 import copy
 import matplotlib
 matplotlib.use('pdf')
 import matplotlib.pyplot as plt
+from scipy import signal
+import os
 
-from hyperparams import Hyperparams as hp
 
-def spectrogram2wav(spectrogram):
-    '''Convert spectrogram into a waveform using Griffin-lim's raw.
+def get_spectrograms(fpath):
+    '''Returns normalized log(melspectrogram) and log(magnitude) from `sound_file`.
+    Args:
+      sound_file: A string. The full path of a sound file.
+
+    Returns:
+      mel: A 2d array of shape (T, n_mels) <- Transposed
+      mag: A 2d array of shape (T, 1+n_fft/2) <- Transposed
     '''
-    spectrogram = spectrogram.T  # [f, t]
-    X_best = copy.deepcopy(spectrogram)  # [f, t]
+    # Loading sound file
+    y, sr = librosa.load(fpath, sr=hp.sr)
+
+    # Trimming
+    y, _ = librosa.effects.trim(y)
+
+    # Preemphasis
+    y = np.append(y[0], y[1:] - hp.preemphasis * y[:-1])
+
+    # stft
+    linear = librosa.stft(y=y,
+                          n_fft=hp.n_fft,
+                          hop_length=hp.hop_length,
+                          win_length=hp.win_length)
+
+    # magnitude spectrogram
+    mag = np.abs(linear)  # (1+n_fft//2, T)
+
+    # mel spectrogram
+    mel_basis = librosa.filters.mel(hp.sr, hp.n_fft, hp.n_mels)  # (n_mels, 1+n_fft//2)
+    mel = np.dot(mel_basis, mag)  # (n_mels, t)
+
+    # to decibel
+    mel = 20 * np.log10(np.maximum(1e-5, mel))
+    mag = 20 * np.log10(np.maximum(1e-5, mag))
+
+    # normalize
+    mel = np.clip((mel - hp.ref_db + hp.max_db) / hp.max_db, 1e-8, 1)
+    mag = np.clip((mag - hp.ref_db + hp.max_db) / hp.max_db, 1e-8, 1)
+
+    # Transpose
+    mel = mel.T.astype(np.float32)  # (T, n_mels)
+    mag = mag.T.astype(np.float32)  # (T, 1+n_fft//2)
+
+    return mel, mag
+
+
+def spectrogram2wav(mag):
+    '''# Generate wave file from spectrogram'''
+    # transpose
+    mag = mag.T
+
+    # de-noramlize
+    mag = (np.clip(mag, 0, 1) * hp.max_db) - hp.max_db + hp.ref_db
+
+    # to amplitude
+    mag = np.power(10.0, mag * 0.05)
+
+    # wav reconstruction
+    wav = griffin_lim(mag)
+
+    # de-preemphasis
+    wav = signal.lfilter([1], [1, -hp.preemphasis], wav)
+
+    # trim
+    wav, _ = librosa.effects.trim(wav)
+
+    return wav.astype(np.float32)
+
+
+def griffin_lim(spectrogram):
+    '''Applies Griffin-Lim's raw.
+    '''
+    X_best = copy.deepcopy(spectrogram)
     for i in range(hp.n_iter):
         X_t = invert_spectrogram(X_best)
-        est = librosa.stft(X_t, hp.n_fft, hp.hop_length, win_length=hp.win_length)  # [f, t]
-        phase = est / np.maximum(1e-8, np.abs(est))  # [f, t]
-        X_best = spectrogram * phase  # [f, t]
+        est = librosa.stft(X_t, hp.n_fft, hp.hop_length, win_length=hp.win_length)
+        phase = est / np.maximum(1e-8, np.abs(est))
+        X_best = spectrogram * phase
     X_t = invert_spectrogram(X_best)
     y = np.real(X_t)
 
     return y
+
 
 def invert_spectrogram(spectrogram):
     '''
@@ -36,45 +108,27 @@ def invert_spectrogram(spectrogram):
     '''
     return librosa.istft(spectrogram, hp.hop_length, win_length=hp.win_length, window="hann")
 
-def plot_alignment(alignments, gs, elapsed_time):
-    """
-    Plots the alignment
-    alignment: A list of (numpy) matrix of shape (encoder_steps, decoder_steps)
+def plot_alignment(alignments, gs):
+    """Plots the alignment
+    alignments: A list of (numpy) matrix of shape (encoder_steps, decoder_steps)
     gs : (int) global step
-    elasped_time: seconds.
     """
-    hours = elapsed_time // 3600
-    minutes = (elapsed_time - 3600 * hours) // 60
-
-    fig, axes = plt.subplots(nrows=len(alignments), ncols=1, figsize=(10, 10))
-    for i, ax in enumerate(axes.flat):
-        im = ax.imshow(alignments[i])
-        ax.axis('off')
-        ax.set_title("Layer {}".format(i))
-
-    fig.subplots_adjust(right=0.8, hspace=0.4)
-    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
-    fig.colorbar(im, cax=cbar_ax)
-    plt.suptitle('{} Steps After {} hours {} minutes'.format(gs, hours, minutes))
+    fig, ax = plt.subplots()
+    im = ax.imshow(alignments[0])
+    fig.colorbar(im)
+    plt.suptitle('{} Steps'.format(gs))
     plt.savefig('{}/alignment_{}.png'.format(hp.logdir, gs), format='png')
-def plot_alignment2(alignments, gs, elapsed_time):
-    """
-    Plots the alignment
-    alignment: A list of (numpy) matrix of shape (encoder_steps, decoder_steps)
-    gs : (int) global step
-    elasped_time: seconds.
-    """
-    hours = elapsed_time // 3600
-    minutes = (elapsed_time - 3600 * hours) // 60
 
-    fig, axes = plt.subplots(nrows=len(alignments), ncols=1, figsize=(10, 10))
-    for i, ax in enumerate(axes.flat):
-        im = ax.plot(alignments[i])
-        ax.axis('off')
-        ax.set_title("Layer {}".format(i))
+def learning_rate_decay(init_lr, global_step, warmup_steps=4000.):
+    '''Noam scheme from tensor2tensor'''
+    step = tf.cast(global_step + 1, dtype=tf.float32)
+    return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-    fig.subplots_adjust(right=0.8, hspace=0.4)
-    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
-    fig.colorbar(im, cax=cbar_ax)
-    plt.suptitle('{} Steps After {} hours {} minutes'.format(gs, hours, minutes))
-    plt.savefig('{}/alignment_{}.png'.format(hp.logdir, gs), format='png')
+# def load_spectrograms(fpath):
+#     fname = os.path.basename(fpath)
+#     mel, mag = get_spectrograms(fpath)
+#     t = mel.shape[0]
+#     num_paddings = hp.r - (t % hp.r) if t % hp.r != 0 else 0 # for reduction
+#     mel = np.pad(mel, [[0, num_paddings], [0, 0]], mode="constant")
+#     mag = np.pad(mag, [[0, num_paddings], [0, 0]], mode="constant")
+#     return fname, mel.reshape((-1, hp.n_mels*hp.r)), mag

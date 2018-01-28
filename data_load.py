@@ -16,98 +16,99 @@ import re
 import os
 import unicodedata
 
-def text_normalize(sent):
-    '''Minimum text preprocessing'''
-    def _strip_accents(s):
-        return ''.join(c for c in unicodedata.normalize('NFD', s)
-                       if unicodedata.category(c) != 'Mn')
-
-    normalized = re.sub("[^ a-z']", "", _strip_accents(sent).lower())
-
-    return normalized
-
 def load_vocab():
-    vocab = "PE abcdefghijklmnopqrstuvwxyz'.?"  # P: Padding E: End of Sentence
-    char2idx = {char: idx for idx, char in enumerate(vocab)}
-    idx2char = {idx: char for idx, char in enumerate(vocab)}
+    char2idx = {char: idx for idx, char in enumerate(hp.vocab)}
+    idx2char = {idx: char for idx, char in enumerate(hp.vocab)}
     return char2idx, idx2char
 
-def load_train_data():
+def text_normalize(text):
+    text = ''.join(char for char in unicodedata.normalize('NFD', text)
+                           if unicodedata.category(char) != 'Mn') # Strip accents
+
+    text = text.lower()
+    text = re.sub("[^{}]".format(hp.vocab), " ", text)
+    text = re.sub("[ ]+", " ", text)
+    return text
+
+def load_data(mode="train"):
     # Load vocabulary
     char2idx, idx2char = load_vocab()
 
-    # Parse
-    texts, mels, dones, mags = [], [], [], []
-    if hp.data=="LJSpeech-1.0":
-        metadata = os.path.join(hp.data, 'metadata.csv')
-        for line in codecs.open(metadata, 'r', 'utf-8'):
-            fname, _, sent = line.strip().split("|")
-            sent = text_normalize(sent) + "E" # text normalization, E: EOS
-            if len(sent) <= hp.Tx:
-                sent += "P"*(hp.Tx-len(sent))
-                texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
-                mels.append(os.path.join(hp.data, "mels", fname + ".npy"))
-                dones.append(os.path.join(hp.data, "dones", fname + ".npy"))
-                mags.append(os.path.join(hp.data, "mags", fname + ".npy"))
-    else: # kate
-        metadata = os.path.join(hp.data, 'text.tsv')
-        for line in codecs.open(metadata, 'r', 'utf-8'):
-            fname, sent, duration = line.strip().split("\t")
-            if not "therese_raquin" in fname: continue
-            sent = text_normalize(sent) + "E"  # text normalization, E: EOS
-            if len(sent) <= hp.Tx:
-                sent += "P" * (hp.Tx - len(sent))
-                texts.append(np.array([char2idx[char] for char in sent], np.int32).tostring())
-                mels.append(os.path.join(hp.data, "mels", fname.split("/")[-1] + ".npy"))
-                dones.append(os.path.join(hp.data, "dones", fname.split("/")[-1] + ".npy"))
-                mags.append(os.path.join(hp.data, "mags", fname.split("/")[-1] + ".npy"))
+    if mode in ("train", "eval"):
+        # Parse
+        fpaths, text_lengths, texts = [], [], []
+        transcript = os.path.join(hp.data, 'transcript.csv')
+        lines = codecs.open(transcript, 'r', 'utf-8').readlines()
+        if mode=="train":
+            lines = lines[1:]
+        else:
+            lines = lines[:1]
 
-    return texts*1, mels*1, dones*1, mags*1
+        for line in lines:
+            fname, _, text = line.strip().split("|")
 
-def load_test_data():
-    # Load vocabulary
-    char2idx, idx2char = load_vocab()
+            fpath = os.path.join(hp.data, "wavs", fname + ".wav")
+            fpaths.append(fpath)
 
-    # Parse
-    texts = []
-    for line in codecs.open('sample_sents.txt', 'r', 'utf-8'):
-        sent = text_normalize(line).strip() + "E" # text normalization, E: EOS
-        if len(sent) <= hp.Tx:
-            sent += "P"*(hp.Tx-len(sent))
-            texts.append([char2idx[char] for char in sent])
-    texts = np.array(texts, np.int32)
-    return texts
+            text = text_normalize(text) + "E"  # E: EOS
+            text = [char2idx[char] for char in text]
+            text_lengths.append(len(text))
+            texts.append(np.array(text, np.int32).tostring())
+
+        return fpaths, text_lengths, texts
+
+    else:
+        # Parse
+        lines = codecs.open('harvard_sentences.txt', 'r', 'utf-8').readlines()[1:]
+        sents = [text_normalize(line.split(" ", 1)[-1]).strip() + "E" for line in lines] # text normalization, E: EOS
+        lengths = [len(sent) for sent in sents]
+        maxlen = sorted(lengths, reverse=True)[0]
+        texts = np.zeros((len(sents), maxlen), np.int32)
+        for i, sent in enumerate(sents):
+            texts[i, :len(sent)] = [char2idx[char] for char in sent]
+        return texts
 
 def get_batch():
     """Loads training data and put them in queues"""
     with tf.device('/cpu:0'):
         # Load data
-        _texts, _mels, _dones, _mags = load_train_data() # bytes
+        fpaths, text_lengths, texts = load_data() # list
+        maxlen, minlen = max(text_lengths), min(text_lengths)
 
         # Calc total batch count
-        num_batch = len(_texts) // hp.batch_size
-         
-        # Convert to string tensor
-        texts = tf.convert_to_tensor(_texts)
-        mels = tf.convert_to_tensor(_mels)
-        dones = tf.convert_to_tensor(_dones)
-        mags = tf.convert_to_tensor(_mags)
-         
+        num_batch = len(fpaths) // hp.batch_size
+
         # Create Queues
-        text, mel, done, mag = tf.train.slice_input_producer([texts, mels, dones, mags], shuffle=True)
+        fpath, text_length, text = tf.train.slice_input_producer([fpaths, text_lengths, texts], shuffle=True)
 
-        # Decoding.
-        text = tf.decode_raw(text, tf.int32) # (Tx,)
-        mel = tf.py_func(lambda x:np.load(x), [mel], tf.float32) # (Ty, n_mels)
-        done = tf.py_func(lambda x:np.load(x), [done], tf.int32) # (Ty,)
-        mag = tf.py_func(lambda x:np.load(x), [mag], tf.float32) # (Ty, 1+n_fft/2)
+        # Parse
+        text = tf.decode_raw(text, tf.int32)  # (None,)
+        mel, mag = tf.py_func(get_spectrograms, [fpath], [tf.float32, tf.float32])  # (None, n_mels)
 
-        # Create batch queues
-        texts, mels, dones, mags = tf.train.batch([text, mel, done, mag],
-                                shapes=[(hp.Tx,), (hp.Ty, hp.n_mels), (hp.Ty,), (hp.Ty, 1+hp.n_fft//2)],
-                                num_threads=32,
-                                batch_size=hp.batch_size, 
-                                capacity=hp.batch_size*32,   
-                                dynamic_pad=False)
+        # Padding
+        text = tf.pad(text, ((0, hp.Tx),))[:hp.Tx]  # (Tx,)
+        mel = tf.pad(mel, ((0, hp.Ty), (0, 0)))[:hp.Ty]  # (Ty, n_mels)
+        mag = tf.pad(mag, ((0, hp.Ty), (0, 0)))[:hp.Ty]  # (Ty, 1+n_fft/2)
+
+        # Reduction
+        mel = tf.reshape(mel, (hp.Ty//hp.r, -1))  # (Ty/r, n_mels*r)
+        done = tf.ones_like(mel[:, 0], dtype=tf.int32)  # (Ty/r,)
+
+        # Add shape information
+        text.set_shape((hp.Tx,))
+        mel.set_shape((hp.Ty//hp.r, hp.n_mels*hp.r))
+        done.set_shape((hp.Ty//hp.r, ))
+        mag.set_shape((hp.Ty, hp.n_fft//2+1))
+
+        # Batching
+        _, (texts, mels, dones, mags) = tf.contrib.training.bucket_by_sequence_length(
+                                            input_length=text_length,
+                                            tensors=[text, mel, done, mag],
+                                            batch_size=hp.batch_size,
+                                            bucket_boundaries=[i for i in range(minlen + 1, maxlen - 1, 20)],
+                                            num_threads=16,
+                                            capacity=hp.batch_size * 4,
+                                            dynamic_pad=True)
 
     return texts, mels, dones, mags, num_batch
+
