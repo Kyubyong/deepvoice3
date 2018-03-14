@@ -20,3 +20,8 @@ I'm trying with [Nick Offerman's audiobook files](https://www.audible.com/pd/Fic
   * train.py: train
   * synthesize.py: inference
   * test_sents.txt: some test sentences in the paper.
+  
+## Papers that referenced this repo
+
+  * [Fitting New Speakers Based on a Short Untranscribed Sample](https://arxiv.org/abs/1802.06984)
+
